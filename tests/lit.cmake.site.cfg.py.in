@@ -1,0 +1,19 @@
+@LIT_SITE_CFG_IN_HEADER@
+
+config.llvm_tools_dir = lit_config.substitute("@LLVM_TOOLS_DIR@")
+config.mlir_obj_dir = "@MLIR_BINARY_DIR@"
+config.llvm_shlib_ext = "@SHLIBEXT@"
+config.project_binary_dir = "@PROJECT_BINARY_DIR@"
+config.project_source_dir = "@PROJECT_SOURCE_DIR@"
+config.project_include_dir = "@CMAKE_SOURCE_DIR@/include"
+config.halide_lib_path = "@HALIDE_LIB_PATH@"
+config.halide_include_path = "@HALIDE_INCLUDE_PATH@"
+config.lib_include_path = "@CMAKE_BINARY_DIR@/lib"
+config.cxx_compiler = "@CMAKE_CXX_COMPILER@"
+config.llvm_lib_path = "@LLVM_LIBRARY_DIR@"
+
+import lit.llvm
+lit.llvm.initialize(lit_config, config)
+
+# Let the main config do the real work.
+lit_config.load_config(config, "@PROJECT_SOURCE_DIR@/tests/lit.cmake.cfg.py")

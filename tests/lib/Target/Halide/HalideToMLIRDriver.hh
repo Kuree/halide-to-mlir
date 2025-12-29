@@ -1,0 +1,8 @@
+#ifndef HALIDE_TO_MLIR_HALIDETOMLIRDRIVER_HH
+#define HALIDE_TO_MLIR_HALIDETOMLIRDRIVER_HH
+
+#include "Halide.h"
+
+void convertAndPrintHalideToMLIR(Halide::Func func);
+
+#endif // HALIDE_TO_MLIR_HALIDETOMLIRDRIVER_HH
