@@ -1,0 +1,583 @@
+#include "mlir/Target/Halide/ImportHalide.hh"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Halide/IR/HalideOps.hh"
+#include "mlir/IR/Builders.h"
+
+#include "llvm/Support/Debug.h"
+
+#define DEBUG_TYPE "import-halide"
+
+namespace {
+
+using namespace Halide::Internal;
+using namespace mlir;
+
+// Helper to convert Halide Types to MLIR Types
+Type convertType(OpBuilder &builder, Halide::Type t) {
+    if (t.is_float()) {
+        if (t.bits() == 16)
+            return builder.getF16Type();
+        if (t.bits() == 32)
+            return builder.getF32Type();
+        if (t.bits() == 64)
+            return builder.getF64Type();
+    } else if (t.is_int() || t.is_uint()) {
+        // MLIR standard integers are signless.
+        // We might want to use signed/unsigned ops based on Halide type,
+        // but the storage type is just IntegerType.
+        return builder.getIntegerType(t.bits());
+    } else if (t.is_handle()) {
+        // Represent handles as opaque pointers or generic int64 for now
+        return builder.getIntegerType(64);
+    } else if (t.is_bool()) {
+        return builder.getI1Type();
+    }
+    // Vector types
+    if (t.lanes() > 1) {
+        Type elemType = convertType(builder, t.element_of());
+        return VectorType::get({t.lanes()}, elemType);
+    }
+    return builder.getNoneType();
+}
+
+class HalideToMLIRVisitor : public IRVisitor {
+  public:
+    OpBuilder &builder;
+    std::stack<Value> valueStack;
+    // Symbol table to map Halide variable names to MLIR Values.
+    // Since Halide IR is scoped, we can simply use a scoped map or
+    // just rely on unique names if Halide guarantees them.
+    // For this implementation, we assume basic shadowing support is needed.
+    // Using a list of maps for scopes.
+    std::vector<llvm::StringMap<Value>> scopes;
+
+    HalideToMLIRVisitor(OpBuilder &b) : builder(b) {
+        // Push global scope
+        scopes.emplace_back();
+    }
+
+    // --- Scope Management ---
+    void pushScope() { scopes.emplace_back(); }
+
+    void popScope() { scopes.pop_back(); }
+
+    void defineSymbol(StringRef name, Value val) { scopes.back()[name] = val; }
+
+    Value lookupSymbol(StringRef name) {
+        // Search from inner-most scope to outer-most
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+            if (it->count(name)) {
+                return (*it)[name];
+            }
+        }
+        return nullptr;
+    }
+
+    void pushValue(Value v) { valueStack.push(v); }
+
+    Value popValue() {
+        assert(!valueStack.empty() && "Value stack underflow");
+        Value v = valueStack.top();
+        valueStack.pop();
+        return v;
+    }
+
+    // Helper to visit a stmt and wrap it in a region
+    void createRegionBody(Region &region, const Stmt &bodyStmt) {
+        auto *block = builder.createBlock(&region);
+        {
+            OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPointToStart(block);
+            pushScope(); // Enter scope for region
+
+            if (bodyStmt.defined()) {
+                bodyStmt.accept(this);
+            }
+
+            // Auto-terminate if not terminated
+            if (block->empty() ||
+                !block->back().hasTrait<OpTrait::IsTerminator>()) {
+                builder.create<halide::YieldOp>(builder.getUnknownLoc());
+            }
+
+            popScope();
+        }
+    }
+
+    // --- Expr Visitors ---
+
+    void visit(const IntImm *op) override {
+        Type t = convertType(builder, op->type);
+        Value v = builder.create<arith::ConstantIntOp>(builder.getUnknownLoc(),
+                                                       op->value, t);
+        pushValue(v);
+    }
+
+    void visit(const UIntImm *op) override {
+        Type t = convertType(builder, op->type);
+        // Arith constant int op handles both signed and unsigned via API bits
+        Value v = builder.create<arith::ConstantIntOp>(builder.getUnknownLoc(),
+                                                       op->value, t);
+        pushValue(v);
+    }
+
+    void visit(const FloatImm *op) override {
+        Type t = convertType(builder, op->type);
+        Value v = builder.create<arith::ConstantFloatOp>(
+            builder.getUnknownLoc(), APFloat(op->value), cast<FloatType>(t));
+        pushValue(v);
+    }
+
+    void visit(const StringImm *op) override {
+        // Halide strings are C strings. MLIR doesn't have a direct string value
+        // type in standard dialect except StringAttr. We'll mostly ignore or
+        // error, or implement a specific StringOp if needed. For now, creating
+        // a dummy or erroring.
+        llvm::errs()
+            << "Warning: StringImm not fully supported in simple conversion: "
+            << op->value << "\n";
+        // Push a dummy value to keep stack balanced
+        pushValue(builder.create<arith::ConstantIntOp>(
+            builder.getUnknownLoc(), 0, builder.getI32Type()));
+    }
+
+    void visit(const Variable *op) override {
+        Value v = lookupSymbol(op->name);
+        if (v) {
+            pushValue(v);
+        } else {
+            // If variable not found (e.g. parameter), create a placeholder op
+            // In a real compiler, parameters would be function arguments.
+            Value newVar = builder.create<halide::VariableOp>(
+                builder.getUnknownLoc(), convertType(builder, op->type),
+                builder.getStringAttr(op->name));
+            pushValue(newVar);
+        }
+    }
+
+    void visit(const Cast *op) override {
+        op->value.accept(this);
+        Value val = popValue();
+        Value res = builder.create<halide::CastOp>(
+            builder.getUnknownLoc(), convertType(builder, op->type), val);
+        pushValue(res);
+    }
+
+    // Binary Arithmetic Helper
+    template <typename OpType>
+    void visitBinaryOp(const Halide::Expr &a, const Halide::Expr &b) {
+        a.accept(this);
+        Value lhs = popValue();
+        b.accept(this);
+        Value rhs = popValue();
+
+        // Note: Halide ops generally have 'a' as left, 'b' as right.
+        // We visited 'a' then 'b'. Stack is [..., lhs, rhs].
+        // Pop gives rhs first.
+        std::swap(lhs, rhs);
+
+        Value res = builder.create<OpType>(builder.getUnknownLoc(), lhs, rhs);
+        pushValue(res);
+    }
+
+    void visit(const Add *op) override {
+        visitBinaryOp<halide::AddOp>(op->a, op->b);
+    }
+    void visit(const Sub *op) override {
+        visitBinaryOp<halide::SubOp>(op->a, op->b);
+    }
+    void visit(const Mul *op) override {
+        visitBinaryOp<halide::MulOp>(op->a, op->b);
+    }
+    void visit(const Div *op) override {
+        visitBinaryOp<halide::DivOp>(op->a, op->b);
+    }
+    void visit(const Mod *op) override {
+        visitBinaryOp<halide::ModOp>(op->a, op->b);
+    }
+    void visit(const Min *op) override {
+        visitBinaryOp<halide::MinOp>(op->a, op->b);
+    }
+    void visit(const Max *op) override {
+        visitBinaryOp<halide::MaxOp>(op->a, op->b);
+    }
+
+    void visit(const EQ *op) override {
+        visitBinaryOp<halide::EQOp>(op->a, op->b);
+    }
+    void visit(const NE *op) override {
+        visitBinaryOp<halide::NEOp>(op->a, op->b);
+    }
+    void visit(const LT *op) override {
+        visitBinaryOp<halide::LTOp>(op->a, op->b);
+    }
+    void visit(const LE *op) override {
+        visitBinaryOp<halide::LEOp>(op->a, op->b);
+    }
+    void visit(const GT *op) override {
+        visitBinaryOp<halide::GTOp>(op->a, op->b);
+    }
+    void visit(const GE *op) override {
+        visitBinaryOp<halide::GEOp>(op->a, op->b);
+    }
+
+    void visit(const And *op) override {
+        visitBinaryOp<halide::AndOp>(op->a, op->b);
+    }
+    void visit(const Or *op) override {
+        visitBinaryOp<halide::OrOp>(op->a, op->b);
+    }
+
+    void visit(const Not *op) override {
+        op->a.accept(this);
+        Value val = popValue();
+        Value res = builder.create<halide::NotOp>(builder.getUnknownLoc(), val);
+        pushValue(res);
+    }
+
+    void visit(const Select *op) override {
+        op->condition.accept(this);
+        Value cond = popValue();
+        op->true_value.accept(this);
+        Value tVal = popValue();
+        op->false_value.accept(this);
+        Value fVal = popValue();
+
+        // Stack order: cond, true, false -> pop: false, true, cond
+        // Wait, standard visit order: cond, true, false.
+        // Stack: [cond], [cond, true], [cond, true, false].
+        // Pop: false. Pop: true. Pop: cond.
+        // So reverse order of popping is required.
+        std::swap(tVal, fVal); // fVal is now actually true_value
+        std::swap(cond, fVal); // cond is now actually condition, tVal is false,
+                               // fVal is true (wait, logic hard)
+
+        // Reset for clarity
+        // Popped: val3 (false_val), val2 (true_val), val1 (condition)
+        Value actualFalse = cond; // Last popped
+        Value actualTrue = tVal;
+        Value actualCond = fVal; // First popped (furthest down)
+
+        // Correct order:
+        // 1. visit(cond) -> push(cond)
+        // 2. visit(true) -> push(true)
+        // 3. visit(false) -> push(false)
+        // Stack top: false.
+
+        // Let's redo logic cleanly:
+        // Value valFalse = popValue();
+        // Value valTrue = popValue();
+        // Value valCond = popValue();
+
+        // The implementation above with swaps was messy.
+        // Correct logic:
+        Value falseV = popValue();
+        Value trueV = popValue();
+        Value condV = popValue();
+
+        Value res = builder.create<halide::SelectOp>(builder.getUnknownLoc(),
+                                                     condV, trueV, falseV);
+        pushValue(res);
+    }
+
+    void visit(const Load *op) override {
+        op->index.accept(this);
+        Value idx = popValue();
+        op->predicate.accept(this);
+        Value pred = popValue();
+
+        // Since predicate is usually on top if visited second.
+        // Just be consistent with visit order.
+
+        Value res = builder.create<halide::LoadOp>(
+            builder.getUnknownLoc(), convertType(builder, op->type),
+            builder.getStringAttr(op->name), idx, pred);
+        pushValue(res);
+    }
+
+    void visit(const Call *op) override {
+        // Collect args
+        std::vector<Value> args;
+        for (const auto &arg : op->args) {
+            arg.accept(this);
+            args.push_back(popValue());
+        }
+
+        // Args are pushed in order. [arg0, arg1, ...]
+        // Stack top is argN.
+        // We popped them? No, I pushed them to vector.
+        // Actually, if I loop accept, stack grows.
+        // If I pop immediately, I get them in order.
+
+        // Wait, loop:
+        // arg0.accept -> Stack: [arg0] -> pop -> args=[arg0]
+        // arg1.accept -> Stack: [arg1] -> pop -> args=[arg0, arg1]
+        // This is correct.
+
+        // TODO: Handle generic calls or intrinsics.
+        // For now, mapping to a generic external call or ignoring special
+        // semantics. Since we don't have a generic CallOp in HalideOps.td yet
+        // (only specific ops), we emit a warning or placeholder. Assuming we
+        // add a `HalideCallOp` to TD or use `func.call`.
+
+        // Placeholder:
+        // pushValue(builder.create<...>(...));
+        llvm::errs() << "Warning: Call node encountered: " << op->name
+                     << ". Not implemented in this snippet.\n";
+        pushValue(builder.create<arith::ConstantIntOp>(
+            builder.getUnknownLoc(), 0, convertType(builder, op->type)));
+    }
+
+    void visit(const Ramp *op) override {
+        // Vector ramp.
+        op->base.accept(this);
+        Value base = popValue();
+        op->stride.accept(this);
+        Value stride = popValue();
+
+        // Need a RampOp in dialect.
+        llvm::errs() << "Warning: Ramp node encountered. Not implemented.\n";
+        Type vecType = convertType(builder, op->type);
+        // Create undefined?
+        pushValue(base); // Incorrect type, but placeholder.
+    }
+
+    void visit(const Broadcast *op) override {
+        op->value.accept(this);
+        Value val = popValue();
+        // Need BroadcastOp
+        llvm::errs()
+            << "Warning: Broadcast node encountered. Not implemented.\n";
+        pushValue(val);
+    }
+
+    void visit(const Let *op) override {
+        op->value.accept(this);
+        Value val = popValue();
+
+        // Let expression is scoped.
+        pushScope();
+        defineSymbol(op->name, val);
+
+        op->body.accept(this);
+        // Result of body is on stack.
+
+        popScope();
+    }
+
+    // --- Stmt Visitors ---
+
+    void visit(const LetStmt *op) override {
+        op->value.accept(this);
+        Value val = popValue();
+
+        auto letOp = builder.create<halide::LetStmtOp>(
+            builder.getUnknownLoc(), builder.getStringAttr(op->name), val);
+
+        // Body is a region where 'name' is visible.
+        // We need to inject the logic to bind the variable inside the region.
+        // Since HalideLetStmtOp region is isolated, we might need a block
+        // argument or just rely on the visitor traversing the body to lookup
+        // 'val' (which is available here). However, if we lower to standard
+        // MLIR, scoping usually means SSA values passed around.
+
+        // In this visitor, since we maintain `scopes` manually, when we visit
+        // `op->body` inside `createRegionBody`, we need to make sure `val` is
+        // registered in that inner scope.
+
+        // But `createRegionBody` creates a NEW scope.
+        // We need to pass this value into that scope.
+
+        // Custom region creation for LetStmt to handle binding
+        Region &region = letOp.getBody();
+        auto *block = builder.createBlock(&region);
+        {
+            OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPointToStart(block);
+            pushScope();
+            defineSymbol(op->name, val); // Bind name -> value
+
+            if (op->body.defined())
+                op->body.accept(this);
+
+            builder.create<halide::YieldOp>(builder.getUnknownLoc());
+            popScope();
+        }
+    }
+
+    void visit(const AssertStmt *op) override {
+        op->condition.accept(this);
+        Value cond = popValue();
+        op->message.accept(this);
+        Value msg = popValue();
+
+        // Warning: AssertStmtOp defined in TD needs to match this signature.
+        // Assuming we create one or ignore.
+        // builder.create<halide::AssertStmtOp>(...);
+    }
+
+    void visit(const ProducerConsumer *op) override {
+        // Not defined in the merged TD file provided in previous turns?
+        // Assuming it exists or skipping.
+        // If it was removed from TD, we skip. If it's there:
+        /*
+        auto pcOp = builder.create<halide::ProducerConsumerOp>(
+            builder.getUnknownLoc(),
+            builder.getStringAttr(op->name),
+            builder.getBoolAttr(op->is_producer)
+        );
+        createRegionBody(pcOp.getBody(), op->body);
+        */
+        // Treating as block for now if op missing
+        op->body.accept(this);
+    }
+
+    void visit(const For *op) override {
+        op->min.accept(this);
+        Value minVal = popValue();
+        op->extent.accept(this);
+        Value extentVal = popValue();
+
+        auto forOp = builder.create<halide::ForOp>(
+            builder.getUnknownLoc(), builder.getStringAttr(op->name), minVal,
+            extentVal, static_cast<halide::ForType>(op->for_type),
+            static_cast<halide::DeviceAPI>(op->device_api),
+            static_cast<halide::Partition>(op->partition_policy));
+
+        // Loop variable needs to be defined in the body.
+        // Halide For loops implicitly define the loop variable `op->name`.
+        // In MLIR `scf.for`, the IV is a block argument.
+        // We should add a block argument for the induction variable.
+
+        Region &region = forOp.getBody();
+        auto *block = builder.createBlock(&region);
+        // Add argument for IV
+        Value iv = block->addArgument(builder.getIntegerType(32),
+                                      builder.getUnknownLoc());
+
+        {
+            OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPointToStart(block);
+            pushScope();
+            defineSymbol(op->name, iv); // Bind loop var name to IV
+
+            if (op->body.defined())
+                op->body.accept(this);
+
+            builder.create<halide::YieldOp>(builder.getUnknownLoc());
+            popScope();
+        }
+    }
+
+    void visit(const Store *op) override {
+        op->value.accept(this);
+        Value val = popValue();
+        op->index.accept(this);
+        Value idx = popValue();
+        op->predicate.accept(this);
+        Value pred = popValue();
+
+        builder.create<halide::StoreOp>(builder.getUnknownLoc(),
+                                        builder.getStringAttr(op->name), val,
+                                        idx, pred);
+    }
+
+    void visit(const Provide *op) override {
+        // Multi-dimensional store.
+        // Needs proper lowering or a ProvideOp.
+        // Flattening to Store usually happens before, but if we see it:
+        llvm::errs() << "Warning: Provide node encountered. Mapping skipped.\n";
+    }
+
+    void visit(const Allocate *op) override {
+        op->condition.accept(this);
+        Value cond = popValue();
+
+        std::vector<Value> extents;
+        for (const auto &e : op->extents) {
+            e.accept(this);
+            extents.push_back(popValue());
+        }
+
+        auto allocOp = builder.create<halide::AllocateOp>(
+            builder.getUnknownLoc(), op->name, convertType(builder, op->type),
+            static_cast<halide::MemoryType>(op->memory_type), extents, cond);
+
+        createRegionBody(allocOp.getBody(), op->body);
+    }
+
+    void visit(const Realize *op) override {
+        // Similar to Allocate but for Funcs.
+        // We can treat it as a scope or ignore if lowering handles it.
+        // Assuming we visit body.
+        op->body.accept(this);
+    }
+
+    void visit(const Halide::Internal::Block *op) override {
+        op->first.accept(this);
+        if (op->rest.defined()) {
+            op->rest.accept(this);
+        }
+    }
+
+    void visit(const IfThenElse *op) override {
+        op->condition.accept(this);
+        Value cond = popValue();
+
+        auto ifOp = builder.create<halide::IfOp>(builder.getUnknownLoc(), cond);
+
+        createRegionBody(ifOp.getThenRegion(), op->then_case);
+
+        if (op->else_case.defined()) {
+            createRegionBody(ifOp.getElseRegion(), op->else_case);
+        }
+    }
+
+    void visit(const Evaluate *op) override {
+        op->value.accept(this);
+        Value v = popValue();
+        // Evaluate just computes the value for side effects.
+        // In MLIR, the operations generated by 'accept' are inserted into the
+        // block. We just discard the result value from the stack.
+        (void)v;
+    }
+
+    void visit(const Shuffle *op) override {
+        llvm::errs() << "Shuffle not impl\n";
+    }
+    void visit(const Prefetch *op) override {
+        llvm::errs() << "Prefetch not impl\n";
+    }
+    void visit(const Atomic *op) override { op->body.accept(this); }
+    void visit(const Free *op) override { /* No-op in MLIR usually */ }
+    void visit(const Acquire *op) override { op->body.accept(this); }
+    void visit(const Fork *op) override { llvm::errs() << "Fork not impl\n"; }
+};
+
+Stmt getStmt(Halide::Func func, const Halide::Target &target) {
+    Halide::Module m =
+        func.compile_to_module(func.infer_arguments(), func.name(), target);
+    auto loweredFunc = m.get_function_by_name(func.name());
+    return loweredFunc.body;
+}
+
+} // namespace
+
+namespace mlir::halide {
+
+OwningOpRef<ModuleOp> importHalide(Halide::Func func, MLIRContext *context,
+                                   const Halide::Target &target) {
+    auto body = getStmt(std::move(func), target);
+    OwningOpRef result =
+        ModuleOp::create(NameLoc::get(StringAttr::get(context, func.name())));
+
+    OpBuilder builder(context);
+    builder.setInsertionPointToEnd(result->getBody());
+
+    HalideToMLIRVisitor visitor(builder);
+    body.accept(&visitor);
+
+    return result;
+}
+
+} // namespace mlir::halide

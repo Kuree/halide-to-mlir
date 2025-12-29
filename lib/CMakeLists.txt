@@ -1,1 +1,2 @@
-add_subdirectory(Dialects)
+add_subdirectory(Dialect)
+add_subdirectory(Target)

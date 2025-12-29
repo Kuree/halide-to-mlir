@@ -1,4 +1,4 @@
-#include "mlir/Dialects/Halide/IR/HalideOps.h"
+#include "mlir/Dialect/Halide/IR/HalideOps.hh"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -20,7 +20,8 @@ void HalideDialect::initialize() {
     addOperations<
 #define GET_OP_LIST
 #include "mlir/Dialects/Halide/IR/HalideOps.cpp.inc"
-    >();
+
+        >();
 
     // Register types/attributes if any (enums are attributes)
 }

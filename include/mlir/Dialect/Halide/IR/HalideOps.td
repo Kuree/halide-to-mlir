@@ -246,17 +246,20 @@ def Halide_IfOp : Halide_Op<"if", [
 
 def Halide_ForOp : Halide_Op<"for", [
       SingleBlockImplicitTerminator<"YieldOp">,
-      DeclareOpInterfaceMethods<LoopLikeOpInterface>
+      DeclareOpInterfaceMethods<LoopLikeOpInterface>,
+      AllTypesMatch<["min", "extent"]>
     ]> {
     let summary = "A for loop.";
-    let arguments = (ins StrAttr:$name, AnyType:$min, AnyType:$max,
+    let arguments = (ins StrAttr:$name, AnyType:$min, AnyType:$extent,
                          Halide_ForType:$for_type, Halide_DeviceAPI:$device_api,
                          Halide_Partition:$partition_policy);
 
     let regions = (region SizedRegion<1>:$body);
 
+    // TODO: latest halide changes it to max.
+    // see: https://github.com/halide/Halide/pull/8858
     let assemblyFormat = [{
-        $name `=` $min `:` type($min) `to` $max `:` type($max)
+        $name `=` $min `extent` $extent `:` type($extent)
         `type` $for_type
         `device` $device_api
         $body attr-dict
