@@ -5,7 +5,7 @@
 #include "mlir/IR/OpImplementation.h"
 
 // Include TableGen generated enum definitions
-#include "mlir/Dialects/Halide/IR/HalideOpsEnums.cpp.inc"
+#include "mlir/Dialect/Halide/IR/HalideOpsEnums.cpp.inc"
 
 using namespace mlir;
 using namespace mlir::halide;
@@ -14,12 +14,12 @@ using namespace mlir::halide;
 // HalideDialect
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialects/Halide/IR/HalideOpsDialect.cpp.inc"
+#include "mlir/Dialect/Halide/IR/HalideOpsDialect.cpp.inc"
 
 void HalideDialect::initialize() {
     addOperations<
 #define GET_OP_LIST
-#include "mlir/Dialects/Halide/IR/HalideOps.cpp.inc"
+#include "mlir/Dialect/Halide/IR/HalideOps.cpp.inc"
 
         >();
 
@@ -31,4 +31,4 @@ void HalideDialect::initialize() {
 //===----------------------------------------------------------------------===//
 
 #define GET_OP_CLASSES
-#include "mlir/Dialects/Halide/IR/HalideOps.cpp.inc"
+#include "mlir/Dialect/Halide/IR/HalideOps.cpp.inc"

@@ -16,7 +16,6 @@ def Halide_Dialect : Dialect {
     This dialect mirrors the Halide Internal IR as defined in `src/IR.h`.
   }];
   let cppNamespace = "::mlir::halide";
-  let useDefaultTypePrinterParser = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -232,8 +231,7 @@ def Halide_GEOp : Halide_CompareOp<"ge"> {
 //===----------------------------------------------------------------------===//
 
 def Halide_IfOp : Halide_Op<"if", [
-      SingleBlockImplicitTerminator<"YieldOp">,
-      DeclareOpInterfaceMethods<RegionBranchOpInterface>
+      SingleBlockImplicitTerminator<"YieldOp">
     ]> {
     let summary = "An if-then-else block.";
     let arguments = (ins I1:$condition);
@@ -246,7 +244,6 @@ def Halide_IfOp : Halide_Op<"if", [
 
 def Halide_ForOp : Halide_Op<"for", [
       SingleBlockImplicitTerminator<"YieldOp">,
-      DeclareOpInterfaceMethods<LoopLikeOpInterface>,
       AllTypesMatch<["min", "extent"]>
     ]> {
     let summary = "A for loop.";
