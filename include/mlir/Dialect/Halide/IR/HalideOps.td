@@ -295,7 +295,7 @@ def Halide_ForOp : Halide_Op<"for", [
     }];
 }
 
-def Halide_LetStmtOp : Halide_Op<"let_stmt", [SingleBlockImplicitTerminator<"YieldOp">]> {
+def Halide_LetStmtOp : Halide_Op<"let", [SingleBlockImplicitTerminator<"YieldOp">]> {
     let summary = "Defines a new variable for the scope of the body.";
     let arguments = (ins StrAttr:$name, AnyType:$value);
     let regions = (region SizedRegion<1>:$body);

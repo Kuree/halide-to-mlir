@@ -16,8 +16,8 @@ int main() {
 }
 
 // CHECK-LABEL: @func
-// CHECK: halide.let_stmt "func.min.0"
-// CHECK: halide.let_stmt "func.min.1"
+// CHECK: halide.let "func.min.0"
+// CHECK: halide.let "func.min.1"
 // CHECK: halide.for "func.s0.y.rebased" = %c0
 // CHECK: halide.for "func.s0.x.rebased" = %c0
 // CHECK: halide.store
