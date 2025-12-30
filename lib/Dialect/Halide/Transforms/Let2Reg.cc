@@ -36,10 +36,34 @@ struct ReplaceLet : OpRewritePattern<halide::LetStmtOp> {
     }
 };
 
+struct InsertArgToFor : OpRewritePattern<halide::ForOp> {
+    using OpRewritePattern::OpRewritePattern;
+    LogicalResult matchAndRewrite(halide::ForOp op,
+                                  PatternRewriter &rewriter) const override {
+        auto *block = &op.getBody().front();
+        if (block->getNumArguments() != 0)
+            return failure();
+        // insert an arg and replace all the variable with the arg
+        auto name = op.getName();
+        auto arg =
+            block->addArgument(op.getMin().getType(), rewriter.getUnknownLoc());
+        // cannot have let stmt or for stmt inside due to shadowing
+        if (!block->getOps<halide::ForOp>().empty() ||
+            !block->getOps<halide::LetStmtOp>().empty())
+            return failure();
+        op.walk([&](halide::VariableOp var) {
+            if (var.getName() == name) {
+                rewriter.replaceOp(var, arg);
+            }
+        });
+        return success();
+    }
+};
+
 struct Let2RegPass : ::impl::Let2RegBase<Let2RegPass> {
     void runOnOperation() override {
         RewritePatternSet patterns(&getContext());
-        patterns.add<ReplaceLet>(&getContext());
+        patterns.add<ReplaceLet, InsertArgToFor>(&getContext());
         GreedyRewriteConfig config;
         // bottom up to prevent lots of mismatches
         config.useTopDownTraversal = false;
@@ -55,4 +79,4 @@ namespace mlir::halide {
 std::unique_ptr<::mlir::Pass> createLet2Reg() {
     return std::make_unique<Let2RegPass>();
 }
-} // namespace mlir::bf
+} // namespace mlir::halide
