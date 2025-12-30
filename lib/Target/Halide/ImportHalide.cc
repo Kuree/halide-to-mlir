@@ -1,7 +1,10 @@
 #include "mlir/Target/Halide/ImportHalide.hh"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Halide/IR/HalideOps.hh"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/SymbolTable.h"
 
 #include "llvm/Support/Debug.h"
 
@@ -87,18 +90,15 @@ class HalideToMLIRVisitor : public IRVisitor {
         auto *block = builder.createBlock(&region);
         {
             OpBuilder::InsertionGuard guard(builder);
-            builder.setInsertionPointToStart(block);
+            builder.setInsertionPointToEnd(block);
             pushScope(); // Enter scope for region
 
             if (bodyStmt.defined()) {
                 bodyStmt.accept(this);
             }
 
-            // Auto-terminate if not terminated
-            if (block->empty() ||
-                !block->back().hasTrait<OpTrait::IsTerminator>()) {
-                builder.create<halide::YieldOp>(builder.getUnknownLoc());
-            }
+            builder.setInsertionPointToEnd(block);
+            builder.create<halide::YieldOp>(builder.getUnknownLoc());
 
             popScope();
         }
@@ -129,16 +129,29 @@ class HalideToMLIRVisitor : public IRVisitor {
     }
 
     void visit(const StringImm *op) override {
-        // Halide strings are C strings. MLIR doesn't have a direct string value
-        // type in standard dialect except StringAttr. We'll mostly ignore or
-        // error, or implement a specific StringOp if needed. For now, creating
-        // a dummy or erroring.
-        llvm::errs()
-            << "Warning: StringImm not fully supported in simple conversion: "
-            << op->value << "\n";
-        // Push a dummy value to keep stack balanced
-        pushValue(builder.create<arith::ConstantIntOp>(
-            builder.getUnknownLoc(), 0, builder.getI32Type()));
+        // use llvm global
+        auto *insertionBlock = builder.getInsertionBlock();
+        auto *symTabOp =
+            SymbolTable::getNearestSymbolTable(insertionBlock->getParentOp());
+        SymbolTable symTab(symTabOp);
+        auto const &val = op->value;
+        auto type = LLVM::LLVMArrayType::get(builder.getI8Type(), val.size());
+        LLVM::GlobalOp global;
+        {
+            OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPointToEnd(&symTabOp->getRegion(0).back());
+            global = builder.create<LLVM::GlobalOp>(
+                builder.getUnknownLoc(), type,
+                /*isConstant=*/true, LLVM::Linkage::Private, "str",
+                builder.getStringAttr(val), /* alignment */ 0);
+
+            symTab.insert(global);
+        }
+
+        // create a ptr
+        auto addressOf =
+            builder.create<LLVM::AddressOfOp>(builder.getUnknownLoc(), global);
+        pushValue(addressOf);
     }
 
     void visit(const Variable *op) override {
@@ -170,11 +183,6 @@ class HalideToMLIRVisitor : public IRVisitor {
         Value lhs = popValue();
         b.accept(this);
         Value rhs = popValue();
-
-        // Note: Halide ops generally have 'a' as left, 'b' as right.
-        // We visited 'a' then 'b'. Stack is [..., lhs, rhs].
-        // Pop gives rhs first.
-        std::swap(lhs, rhs);
 
         Value res = builder.create<OpType>(builder.getUnknownLoc(), lhs, rhs);
         pushValue(res);
@@ -252,12 +260,6 @@ class HalideToMLIRVisitor : public IRVisitor {
         std::swap(cond, fVal); // cond is now actually condition, tVal is false,
                                // fVal is true (wait, logic hard)
 
-        // Reset for clarity
-        // Popped: val3 (false_val), val2 (true_val), val1 (condition)
-        Value actualFalse = cond; // Last popped
-        Value actualTrue = tVal;
-        Value actualCond = fVal; // First popped (furthest down)
-
         // Correct order:
         // 1. visit(cond) -> push(cond)
         // 2. visit(true) -> push(true)
@@ -303,27 +305,13 @@ class HalideToMLIRVisitor : public IRVisitor {
             args.push_back(popValue());
         }
 
-        // Args are pushed in order. [arg0, arg1, ...]
-        // Stack top is argN.
-        // We popped them? No, I pushed them to vector.
-        // Actually, if I loop accept, stack grows.
-        // If I pop immediately, I get them in order.
-
-        // Wait, loop:
-        // arg0.accept -> Stack: [arg0] -> pop -> args=[arg0]
-        // arg1.accept -> Stack: [arg1] -> pop -> args=[arg0, arg1]
-        // This is correct.
-
         // TODO: Handle generic calls or intrinsics.
         // For now, mapping to a generic external call or ignoring special
         // semantics. Since we don't have a generic CallOp in HalideOps.td yet
         // (only specific ops), we emit a warning or placeholder. Assuming we
         // add a `HalideCallOp` to TD or use `func.call`.
 
-        // Placeholder:
-        // pushValue(builder.create<...>(...));
-        llvm::errs() << "Warning: Call node encountered: " << op->name
-                     << ". Not implemented in this snippet.\n";
+        llvm::errs() << "Warning: Call node encountered: " << op->name << "\n";
         pushValue(builder.create<arith::ConstantIntOp>(
             builder.getUnknownLoc(), 0, convertType(builder, op->type)));
     }
@@ -374,33 +362,20 @@ class HalideToMLIRVisitor : public IRVisitor {
         auto letOp = builder.create<halide::LetStmtOp>(
             builder.getUnknownLoc(), builder.getStringAttr(op->name), val);
 
-        // Body is a region where 'name' is visible.
-        // We need to inject the logic to bind the variable inside the region.
-        // Since HalideLetStmtOp region is isolated, we might need a block
-        // argument or just rely on the visitor traversing the body to lookup
-        // 'val' (which is available here). However, if we lower to standard
-        // MLIR, scoping usually means SSA values passed around.
-
-        // In this visitor, since we maintain `scopes` manually, when we visit
-        // `op->body` inside `createRegionBody`, we need to make sure `val` is
-        // registered in that inner scope.
-
-        // But `createRegionBody` creates a NEW scope.
-        // We need to pass this value into that scope.
-
-        // Custom region creation for LetStmt to handle binding
         Region &region = letOp.getBody();
         auto *block = builder.createBlock(&region);
         {
             OpBuilder::InsertionGuard guard(builder);
-            builder.setInsertionPointToStart(block);
+            builder.setInsertionPointToEnd(block);
             pushScope();
             defineSymbol(op->name, val); // Bind name -> value
 
             if (op->body.defined())
                 op->body.accept(this);
 
-            builder.create<halide::YieldOp>(builder.getUnknownLoc());
+            builder.setInsertionPointToEnd(block);
+            builder.create<halide::YieldOp>(
+                NameLoc::get(builder.getStringAttr(op->name)));
             popScope();
         }
     }
@@ -417,19 +392,9 @@ class HalideToMLIRVisitor : public IRVisitor {
     }
 
     void visit(const ProducerConsumer *op) override {
-        // Not defined in the merged TD file provided in previous turns?
-        // Assuming it exists or skipping.
-        // If it was removed from TD, we skip. If it's there:
-        /*
-        auto pcOp = builder.create<halide::ProducerConsumerOp>(
-            builder.getUnknownLoc(),
-            builder.getStringAttr(op->name),
-            builder.getBoolAttr(op->is_producer)
-        );
-        createRegionBody(pcOp.getBody(), op->body);
-        */
+        llvm::errs() << "Warning: ProducerConsumer node encountered.\n";
         // Treating as block for now if op missing
-        op->body.accept(this);
+        // op->body.accept(this);
     }
 
     void visit(const For *op) override {
@@ -457,14 +422,15 @@ class HalideToMLIRVisitor : public IRVisitor {
 
         {
             OpBuilder::InsertionGuard guard(builder);
-            builder.setInsertionPointToStart(block);
+            builder.setInsertionPointToEnd(block);
             pushScope();
             defineSymbol(op->name, iv); // Bind loop var name to IV
 
             if (op->body.defined())
                 op->body.accept(this);
-
-            builder.create<halide::YieldOp>(builder.getUnknownLoc());
+            builder.setInsertionPointToEnd(block);
+            builder.create<halide::YieldOp>(
+                NameLoc::get(builder.getStringAttr(op->name)));
             popScope();
         }
     }
@@ -483,10 +449,7 @@ class HalideToMLIRVisitor : public IRVisitor {
     }
 
     void visit(const Provide *op) override {
-        // Multi-dimensional store.
-        // Needs proper lowering or a ProvideOp.
-        // Flattening to Store usually happens before, but if we see it:
-        llvm::errs() << "Warning: Provide node encountered. Mapping skipped.\n";
+        llvm_unreachable("Not implemented");
     }
 
     void visit(const Allocate *op) override {
@@ -526,11 +489,11 @@ class HalideToMLIRVisitor : public IRVisitor {
 
         auto ifOp = builder.create<halide::IfOp>(builder.getUnknownLoc(), cond);
 
+        OpBuilder::InsertionGuard guard(builder);
+
         createRegionBody(ifOp.getThenRegion(), op->then_case);
 
-        if (op->else_case.defined()) {
-            createRegionBody(ifOp.getElseRegion(), op->else_case);
-        }
+        createRegionBody(ifOp.getElseRegion(), op->else_case);
     }
 
     void visit(const Evaluate *op) override {
@@ -548,10 +511,14 @@ class HalideToMLIRVisitor : public IRVisitor {
     void visit(const Prefetch *op) override {
         llvm::errs() << "Prefetch not impl\n";
     }
-    void visit(const Atomic *op) override { op->body.accept(this); }
-    void visit(const Free *op) override { /* No-op in MLIR usually */ }
-    void visit(const Acquire *op) override { op->body.accept(this); }
-    void visit(const Fork *op) override { llvm::errs() << "Fork not impl\n"; }
+    void visit(const Atomic *op) override {
+        llvm_unreachable("Not implemented");
+    }
+    void visit(const Free *op) override { llvm_unreachable("Not implemented"); }
+    void visit(const Acquire *op) override {
+        llvm_unreachable("Not implemented");
+    }
+    void visit(const Fork *op) override { llvm_unreachable("Not implemented"); }
 };
 
 Stmt getStmt(Halide::Func func, const Halide::Target &target) {
@@ -567,15 +534,23 @@ namespace mlir::halide {
 
 OwningOpRef<ModuleOp> importHalide(Halide::Func func, MLIRContext *context,
                                    const Halide::Target &target) {
+    auto name = func.name();
     auto body = getStmt(std::move(func), target);
     OwningOpRef result =
-        ModuleOp::create(NameLoc::get(StringAttr::get(context, func.name())));
+        ModuleOp::create(NameLoc::get(StringAttr::get(context, name)));
 
     OpBuilder builder(context);
     builder.setInsertionPointToEnd(result->getBody());
 
+    auto funcOp = builder.create<func::FuncOp>(builder.getUnknownLoc(), name,
+                                               builder.getFunctionType({}, {}));
+    auto *entryBlock = funcOp.addEntryBlock();
+    builder.setInsertionPointToEnd(entryBlock);
     HalideToMLIRVisitor visitor(builder);
     body.accept(&visitor);
+    assert(visitor.valueStack.empty() && "Incorrect visit state");
+    builder.setInsertionPointToEnd(entryBlock);
+    builder.create<func::ReturnOp>(builder.getUnknownLoc());
 
     return result;
 }
