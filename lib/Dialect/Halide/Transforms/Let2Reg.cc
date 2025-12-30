@@ -48,9 +48,14 @@ struct InsertArgToFor : OpRewritePattern<halide::ForOp> {
         auto arg =
             block->addArgument(op.getMin().getType(), rewriter.getUnknownLoc());
         // cannot have let stmt or for stmt inside due to shadowing
-        if (!block->getOps<halide::ForOp>().empty() ||
-            !block->getOps<halide::LetStmtOp>().empty())
+        if (!block->getOps<halide::LetStmtOp>().empty())
             return failure();
+        if (llvm::any_of(block->getOps<halide::ForOp>(),
+                         [](halide::ForOp forOp) {
+                             return forOp.getBody().getNumArguments() == 0;
+                         }))
+            return failure();
+
         op.walk([&](halide::VariableOp var) {
             if (var.getName() == name) {
                 rewriter.replaceOp(var, arg);
