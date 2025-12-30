@@ -473,11 +473,43 @@ class HalideToMLIRVisitor : public IRVisitor {
     void visit(const Fork *op) override { llvm_unreachable("Not implemented"); }
 };
 
-Stmt getStmt(Halide::Func func, const Halide::Target &target) {
+LoweredFunc getLoweredFunc(Halide::Func func, const Halide::Target &target) {
     Halide::Module m =
         func.compile_to_module(func.infer_arguments(), func.name(), target);
     auto loweredFunc = m.get_function_by_name(func.name());
-    return loweredFunc.body;
+    return loweredFunc;
+}
+
+void setupFuncArgs(ArrayRef<LoweredArgument> args, func::FuncOp funcOp,
+                   OpBuilder &builder) {
+    // compute the new type
+    SmallVector<Type> types;
+    llvm::transform(args, std::back_inserter(types),
+                    [&](const Halide::Argument &arg) -> Type {
+                        if (arg.kind == Halide::Argument::Kind::InputScalar) {
+                            return convertType(builder, arg.type);
+                        }
+                        return builder.getType<halide::HandleType>();
+                    });
+    auto newType = builder.getFunctionType(types, {});
+    funcOp.setFunctionType(newType);
+    auto *newBlock = funcOp.addEntryBlock();
+    builder.setInsertionPointToEnd(newBlock);
+    // use let statement to set the scope properly
+    for (auto const [idx, arg] : llvm::enumerate(args)) {
+        auto argValue = newBlock->getArgument(idx);
+        // some hack to get the proper buffer reference
+        std::string name = arg.name;
+        if (arg.kind != Halide::Argument::Kind::InputScalar) {
+            name.append(".buffer");
+        }
+        auto letStmt = builder.create<halide::LetStmtOp>(
+            NameLoc::get(builder.getStringAttr(arg.name)), name, argValue);
+        auto *block = builder.createBlock(&letStmt.getBody());
+        builder.setInsertionPointToEnd(block);
+        auto yield = builder.create<halide::YieldOp>(builder.getUnknownLoc());
+        builder.setInsertionPoint(yield);
+    }
 }
 
 } // namespace
@@ -487,7 +519,7 @@ namespace mlir::halide {
 OwningOpRef<ModuleOp> importHalide(Halide::Func func, MLIRContext *context,
                                    const Halide::Target &target) {
     auto name = func.name();
-    auto body = getStmt(std::move(func), target);
+    auto loweredFunc = getLoweredFunc(std::move(func), target);
     OwningOpRef result =
         ModuleOp::create(NameLoc::get(StringAttr::get(context, name)));
 
@@ -496,12 +528,12 @@ OwningOpRef<ModuleOp> importHalide(Halide::Func func, MLIRContext *context,
 
     auto funcOp = builder.create<func::FuncOp>(builder.getUnknownLoc(), name,
                                                builder.getFunctionType({}, {}));
-    auto *entryBlock = funcOp.addEntryBlock();
-    builder.setInsertionPointToEnd(entryBlock);
+    setupFuncArgs(loweredFunc.args, funcOp, builder);
+
     HalideToMLIRVisitor visitor(builder);
-    body.accept(&visitor);
+    loweredFunc.body.accept(&visitor);
     assert(visitor.valueStack.empty() && "Incorrect visit state");
-    builder.setInsertionPointToEnd(entryBlock);
+    builder.setInsertionPointToEnd(&funcOp.getBody().back());
     builder.create<func::ReturnOp>(builder.getUnknownLoc());
 
     return result;
