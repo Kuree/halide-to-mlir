@@ -16,6 +16,8 @@ def Halide_Dialect : Dialect {
     This dialect mirrors the Halide Internal IR as defined in `src/IR.h`.
   }];
   let cppNamespace = "::mlir::halide";
+
+  let useDefaultTypePrinterParser = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -88,6 +90,23 @@ def Halide_CallType : I32EnumAttr<"CallType", "Types of function calls",
     I32EnumAttrCase<"PureIntrinsic", 6>
   ]> {
   let cppNamespace = "::mlir::halide";
+}
+
+//===----------------------------------------------------------------------===//
+// Halide Type Definitions
+//===----------------------------------------------------------------------===//
+
+def Halide_HandleType : TypeDef<Halide_Dialect, "Handle"> {
+  let mnemonic = "handle";
+  let summary = "Halide handle type";
+  let description = [{
+    Represents an opaque handle type in Halide.  Handles are used for pointers
+    to external objects, buffers, and other opaque data structures that Halide
+    doesn't need to inspect directly.
+  }];
+
+  let parameters = (ins);
+  let assemblyFormat = "";
 }
 
 //===----------------------------------------------------------------------===//

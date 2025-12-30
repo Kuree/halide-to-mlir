@@ -10,6 +10,9 @@
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
+#define GET_TYPEDEF_CLASSES
+#include "mlir/Dialect/Halide/IR/HalideOpsTypes.h.inc"
+
 #include "mlir/Dialect/Halide/IR/HalideOpsEnums.h.inc"
 
 #include "mlir/Dialect/Halide/IR/HalideOpsDialect.h.inc"

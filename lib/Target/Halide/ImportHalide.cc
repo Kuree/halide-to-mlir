@@ -30,8 +30,8 @@ Type convertType(OpBuilder &builder, Halide::Type t) {
         // but the storage type is just IntegerType.
         return builder.getIntegerType(t.bits());
     } else if (t.is_handle()) {
-        // Represent handles as opaque pointers or generic int64 for now
-        return builder.getIntegerType(64);
+        // Represent handles using the Halide handle type
+        return builder.getType<halide::HandleType>();
     } else if (t.is_bool()) {
         return builder.getI1Type();
     }
@@ -147,6 +147,17 @@ class HalideToMLIRVisitor : public IRVisitor {
         Value lhs = popValue();
         b.accept(this);
         Value rhs = popValue();
+
+        // handle !halide.handle type comparison without a cast op
+        auto lhsType = lhs.getType();
+        auto rhsType = rhs.getType();
+        if (isa<halide::HandleType>(lhsType) && rhsType.isIntOrFloat()) {
+            lhs = builder.create<halide::CastOp>(builder.getUnknownLoc(),
+                                                 rhsType, lhs);
+        } else if (isa<halide::HandleType>(rhsType) && lhsType.isIntOrFloat()) {
+            rhs = builder.create<halide::CastOp>(builder.getUnknownLoc(),
+                                                 lhsType, rhs);
+        }
 
         Value res = builder.create<OpType>(builder.getUnknownLoc(), lhs, rhs);
         pushValue(res);

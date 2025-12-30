@@ -2,7 +2,10 @@
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
+
+#include "llvm/ADT//TypeSwitch.h"
 
 // Include TableGen generated enum definitions
 #include "mlir/Dialect/Halide/IR/HalideOpsEnums.cpp.inc"
@@ -23,8 +26,17 @@ void HalideDialect::initialize() {
 
         >();
 
-    // Register types/attributes if any (enums are attributes)
+    addTypes<
+#define GET_TYPEDEF_LIST
+#include "mlir/Dialect/Halide/IR/HalideOpsTypes.cpp.inc"
+        >();
 }
+
+//===----------------------------------------------------------------------===//
+// Halide Types
+//===----------------------------------------------------------------------===//
+#define GET_TYPEDEF_CLASSES
+#include "mlir/Dialect/Halide/IR/HalideOpsTypes.cpp.inc"
 
 //===----------------------------------------------------------------------===//
 // Halide Operations
