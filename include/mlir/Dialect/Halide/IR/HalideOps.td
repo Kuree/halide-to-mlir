@@ -291,6 +291,7 @@ def Halide_ForOp : Halide_Op<"for", [
         $name `=` $min `extent` $extent `:` type($extent)
         `type` $for_type
         `device` $device_api
+        `partition` $partition_policy
         $body attr-dict
     }];
 }
