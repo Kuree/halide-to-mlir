@@ -329,11 +329,22 @@ class HalideToMLIRVisitor : public IRVisitor {
     void visit(const AssertStmt *op) override {
         op->condition.accept(this);
         Value cond = popValue();
+
+        auto assertOp =
+            builder.create<halide::AssertStmtOp>(builder.getUnknownLoc(), cond);
+
+        OpBuilder::InsertionGuard guard(builder);
+        Region &region = assertOp.getMessage();
+        auto *block = builder.createBlock(&region);
+        builder.setInsertionPointToEnd(block);
+
+        // Visit the message expression
         op->message.accept(this);
         Value msg = popValue();
 
-        builder.create<halide::AssertStmtOp>(builder.getUnknownLoc(), cond,
-                                             msg);
+        // Yield the message value
+        builder.setInsertionPointToEnd(block);
+        builder.create<halide::YieldOp>(builder.getUnknownLoc());
     }
 
     void visit(const ProducerConsumer *op) override {

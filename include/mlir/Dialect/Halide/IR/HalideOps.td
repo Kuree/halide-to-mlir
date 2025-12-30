@@ -357,17 +357,18 @@ def Halide_ProducerConsumerOp : Halide_Op<"producer_consumer", [SingleBlockImpli
     }];
 }
 
-def Halide_AssertStmtOp :  Halide_Op<"assert"> {
+def Halide_AssertStmtOp : Halide_Op<"assert", [SingleBlockImplicitTerminator<"YieldOp">]> {
     let summary = "Assert that a condition is true.";
     let description = [{
         Represents an assertion in Halide code. If the condition evaluates to false,
-        the message is displayed and execution is halted.
-        The message operand should evaluate to a string (typically an LLVM global pointer).
+        the message expression in the body region is evaluated and displayed, and
+        execution is halted.
     }];
 
-    let arguments = (ins I1: $condition, AnyType:$message);
+    let arguments = (ins I1:$condition);
+    let regions = (region SizedRegion<1>: $message);
 
     let assemblyFormat = [{
-        $condition `,` $message attr-dict `:` type($message)
+        $condition $message attr-dict
     }];
 }
