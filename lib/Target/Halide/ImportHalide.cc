@@ -47,34 +47,8 @@ class HalideToMLIRVisitor : public IRVisitor {
   public:
     OpBuilder &builder;
     std::stack<Value> valueStack;
-    // Symbol table to map Halide variable names to MLIR Values.
-    // Since Halide IR is scoped, we can simply use a scoped map or
-    // just rely on unique names if Halide guarantees them.
-    // For this implementation, we assume basic shadowing support is needed.
-    // Using a list of maps for scopes.
-    std::vector<llvm::StringMap<Value>> scopes;
 
-    HalideToMLIRVisitor(OpBuilder &b) : builder(b) {
-        // Push global scope
-        scopes.emplace_back();
-    }
-
-    // --- Scope Management ---
-    void pushScope() { scopes.emplace_back(); }
-
-    void popScope() { scopes.pop_back(); }
-
-    void defineSymbol(StringRef name, Value val) { scopes.back()[name] = val; }
-
-    Value lookupSymbol(StringRef name) {
-        // Search from inner-most scope to outer-most
-        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-            if (it->count(name)) {
-                return (*it)[name];
-            }
-        }
-        return nullptr;
-    }
+    HalideToMLIRVisitor(OpBuilder &b) : builder(b) {}
 
     void pushValue(Value v) { valueStack.push(v); }
 
@@ -91,7 +65,6 @@ class HalideToMLIRVisitor : public IRVisitor {
         {
             OpBuilder::InsertionGuard guard(builder);
             builder.setInsertionPointToEnd(block);
-            pushScope(); // Enter scope for region
 
             if (bodyStmt.defined()) {
                 bodyStmt.accept(this);
@@ -99,8 +72,6 @@ class HalideToMLIRVisitor : public IRVisitor {
 
             builder.setInsertionPointToEnd(block);
             builder.create<halide::YieldOp>(builder.getUnknownLoc());
-
-            popScope();
         }
     }
 
@@ -155,17 +126,10 @@ class HalideToMLIRVisitor : public IRVisitor {
     }
 
     void visit(const Variable *op) override {
-        Value v = lookupSymbol(op->name);
-        if (v) {
-            pushValue(v);
-        } else {
-            // If variable not found (e.g. parameter), create a placeholder op
-            // In a real compiler, parameters would be function arguments.
-            Value newVar = builder.create<halide::VariableOp>(
-                builder.getUnknownLoc(), convertType(builder, op->type),
-                builder.getStringAttr(op->name));
-            pushValue(newVar);
-        }
+        Value newVar = builder.create<halide::VariableOp>(
+            builder.getUnknownLoc(), convertType(builder, op->type),
+            builder.getStringAttr(op->name));
+        pushValue(newVar);
     }
 
     void visit(const Cast *op) override {
@@ -305,52 +269,26 @@ class HalideToMLIRVisitor : public IRVisitor {
             args.push_back(popValue());
         }
 
-        // TODO: Handle generic calls or intrinsics.
-        // For now, mapping to a generic external call or ignoring special
-        // semantics. Since we don't have a generic CallOp in HalideOps.td yet
-        // (only specific ops), we emit a warning or placeholder. Assuming we
-        // add a `HalideCallOp` to TD or use `func.call`.
+        // Create the CallOp with the function name, call type, and arguments
+        Value res = builder.create<halide::CallOp>(
+            builder.getUnknownLoc(), convertType(builder, op->type),
+            builder.getStringAttr(op->name),
+            static_cast<halide::CallType>(op->call_type), args);
 
-        llvm::errs() << "Warning: Call node encountered: " << op->name << "\n";
-        pushValue(builder.create<arith::ConstantIntOp>(
-            builder.getUnknownLoc(), 0, convertType(builder, op->type)));
+        pushValue(res);
     }
 
-    void visit(const Ramp *op) override {
-        // Vector ramp.
-        op->base.accept(this);
-        Value base = popValue();
-        op->stride.accept(this);
-        Value stride = popValue();
-
-        // Need a RampOp in dialect.
-        llvm::errs() << "Warning: Ramp node encountered. Not implemented.\n";
-        Type vecType = convertType(builder, op->type);
-        // Create undefined?
-        pushValue(base); // Incorrect type, but placeholder.
-    }
+    void visit(const Ramp *op) override { llvm_unreachable("Not implemented"); }
 
     void visit(const Broadcast *op) override {
-        op->value.accept(this);
-        Value val = popValue();
-        // Need BroadcastOp
-        llvm::errs()
-            << "Warning: Broadcast node encountered. Not implemented.\n";
-        pushValue(val);
+        llvm_unreachable("Not implemented");
     }
 
     void visit(const Let *op) override {
         op->value.accept(this);
         Value val = popValue();
 
-        // Let expression is scoped.
-        pushScope();
-        defineSymbol(op->name, val);
-
         op->body.accept(this);
-        // Result of body is on stack.
-
-        popScope();
     }
 
     // --- Stmt Visitors ---
@@ -367,8 +305,6 @@ class HalideToMLIRVisitor : public IRVisitor {
         {
             OpBuilder::InsertionGuard guard(builder);
             builder.setInsertionPointToEnd(block);
-            pushScope();
-            defineSymbol(op->name, val); // Bind name -> value
 
             if (op->body.defined())
                 op->body.accept(this);
@@ -376,7 +312,6 @@ class HalideToMLIRVisitor : public IRVisitor {
             builder.setInsertionPointToEnd(block);
             builder.create<halide::YieldOp>(
                 NameLoc::get(builder.getStringAttr(op->name)));
-            popScope();
         }
     }
 
@@ -386,15 +321,27 @@ class HalideToMLIRVisitor : public IRVisitor {
         op->message.accept(this);
         Value msg = popValue();
 
-        // Warning: AssertStmtOp defined in TD needs to match this signature.
-        // Assuming we create one or ignore.
-        // builder.create<halide::AssertStmtOp>(...);
+        builder.create<halide::AssertStmtOp>(builder.getUnknownLoc(), cond,
+                                             msg);
     }
 
     void visit(const ProducerConsumer *op) override {
-        llvm::errs() << "Warning: ProducerConsumer node encountered.\n";
-        // Treating as block for now if op missing
-        // op->body.accept(this);
+        auto producerConsumerOp = builder.create<halide::ProducerConsumerOp>(
+            builder.getUnknownLoc(), builder.getStringAttr(op->name),
+            builder.getBoolAttr(op->is_producer));
+
+        Region &region = producerConsumerOp.getBody();
+        auto *block = builder.createBlock(&region);
+        {
+            OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPointToEnd(block);
+
+            if (op->body.defined())
+                op->body.accept(this);
+
+            builder.setInsertionPointToEnd(block);
+            builder.create<halide::YieldOp>(builder.getUnknownLoc());
+        }
     }
 
     void visit(const For *op) override {
@@ -416,22 +363,16 @@ class HalideToMLIRVisitor : public IRVisitor {
 
         Region &region = forOp.getBody();
         auto *block = builder.createBlock(&region);
-        // Add argument for IV
-        Value iv = block->addArgument(builder.getIntegerType(32),
-                                      builder.getUnknownLoc());
 
         {
             OpBuilder::InsertionGuard guard(builder);
             builder.setInsertionPointToEnd(block);
-            pushScope();
-            defineSymbol(op->name, iv); // Bind loop var name to IV
 
             if (op->body.defined())
                 op->body.accept(this);
             builder.setInsertionPointToEnd(block);
             builder.create<halide::YieldOp>(
                 NameLoc::get(builder.getStringAttr(op->name)));
-            popScope();
         }
     }
 

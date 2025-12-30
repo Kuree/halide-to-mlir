@@ -77,6 +77,19 @@ def Halide_Partition : I32EnumAttr<"Partition", "Loop partitioning policy",
   let cppNamespace = "::mlir::halide";
 }
 
+def Halide_CallType : I32EnumAttr<"CallType", "Types of function calls",
+  [
+    I32EnumAttrCase<"Image", 0>,
+    I32EnumAttrCase<"Extern", 1>,
+    I32EnumAttrCase<"ExternCPlusPlus", 2>,
+    I32EnumAttrCase<"PureExtern", 3>,
+    I32EnumAttrCase<"Halide", 4>,
+    I32EnumAttrCase<"Intrinsic", 5>,
+    I32EnumAttrCase<"PureIntrinsic", 6>
+  ]> {
+  let cppNamespace = "::mlir::halide";
+}
+
 //===----------------------------------------------------------------------===//
 // Base Classes
 //===----------------------------------------------------------------------===//
@@ -289,5 +302,53 @@ def Halide_AllocateOp : Halide_Op<"allocate", [SingleBlockImplicitTerminator<"Yi
     let regions = (region SizedRegion<1>:$body);
     let assemblyFormat = [{
         $name `:` $type `[` $extents `:` type($extents) `]` `if` $condition $body attr-dict
+    }];
+}
+
+def Halide_CallOp :  Halide_Op<"call", []> {
+    let summary = "Call an external function or intrinsic.";
+    let description = [{
+        Represents a call to an external function or Halide intrinsic.
+        The call has a name, a call type, a list of arguments, and a return type.
+    }];
+
+    let arguments = (ins StrAttr:$name,
+                         Halide_CallType:$call_type,
+                         Variadic<AnyType>: $args);
+    let results = (outs AnyType: $result);
+
+    let assemblyFormat = [{
+        $call_type $name `(` $args `)` attr-dict `:` functional-type($args, $result)
+    }];
+}
+
+def Halide_ProducerConsumerOp : Halide_Op<"producer_consumer", [SingleBlockImplicitTerminator<"YieldOp">]> {
+    let summary = "Marks a producer-consumer relationship. ";
+    let description = [{
+        Represents a producer or consumer block in Halide's scheduling.
+        The `is_producer` attribute indicates whether this is a producer (true) or consumer (false) block.
+        The `name` attribute identifies the function being produced or consumed.
+    }];
+
+    let arguments = (ins StrAttr: $name, BoolAttr: $is_producer);
+    let regions = (region SizedRegion<1>:$body);
+
+    let assemblyFormat = [{
+        $name `is_producer` $is_producer $body attr-dict
+    }];
+}
+
+def Halide_AssertStmtOp :  Halide_Op<"assert"> {
+    let summary = "Assert that a condition is true.";
+    let description = [{
+        Represents an assertion in Halide code. If the condition evaluates to false,
+        the message is displayed and execution is halted.
+        The message operand should evaluate to a string (typically an LLVM global pointer).
+    }];
+
+    let arguments = (ins I1: $condition, AnyType:$message);
+
+    let assemblyFormat = [{
+        $condition `,` $message attr-dict `:` type($message)
     }];
 }

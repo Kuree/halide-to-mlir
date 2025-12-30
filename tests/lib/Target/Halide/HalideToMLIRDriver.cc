@@ -12,7 +12,6 @@ void convertAndPrintHalideToMLIR(Halide::Func func) {
                         mlir::func::FuncDialect, mlir::LLVM::LLVMDialect>();
     if (auto mod = mlir::halide::importHalide(std::move(func), &context)) {
         (void)mlir::verify(*mod);
-        mlir::OpPrintingFlags flags;
-        mod->print(llvm::errs(), flags.enableDebugInfo());
+        mod->print(llvm::outs());
     }
 }
