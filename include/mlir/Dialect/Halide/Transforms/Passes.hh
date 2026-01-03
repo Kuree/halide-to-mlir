@@ -10,7 +10,6 @@ namespace mlir::halide {
 #define GEN_PASS_REGISTRATION
 #include "mlir/Dialect/Halide/Transforms/Passes.h.inc"
 
-} // namespace mlir::bf
-
+} // namespace mlir::halide
 
 #endif // HALIDE_TO_MLIR_PASSES_HH

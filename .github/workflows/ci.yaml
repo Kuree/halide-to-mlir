@@ -1,0 +1,32 @@
+name: halie-to-mlir CI test
+on: [push]
+jobs:
+  clang-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Act dependencies
+        if: ${{ env.ACT }}
+        run: |
+          apt-get update && apt-get install -y clang-format
+      - run: find lib/ include/ tools/ -iname *.hh -o -iname *.cc | xargs clang-format -n -Werror --style=file
+
+  linux:
+    runs-on: ubuntu-latest
+    needs: clang-format
+    steps:
+      - name: install packages
+        run: |
+          sudo apt-get update && sudo apt-get install -y libllvm19 llvm-19-dev mlir-19-tools libmlir-19 libmlir-19-dev cmake ninja-build
+          pip3 install lit
+      - run: ls /usr/lib/llvm-19/lib/cmake/ -l
+      - uses: actions/checkout@v4
+      - name: configure
+        run: |
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DLLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm/ -DLLVM_EXTERNAL_LIT=`which lit` -GNinja
+      - name: build and test
+        run: |
+          cd build
+          ninja check-halide
