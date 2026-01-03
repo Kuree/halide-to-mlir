@@ -10,4 +10,5 @@ target_link_libraries(
         MLIRLLVMDialect
         MLIRSCFDialect
         MLIRHalideTransforms
-        MLIRHalideToArith)
+        MLIRHalideToArith
+        MLIRHalideToMath)
