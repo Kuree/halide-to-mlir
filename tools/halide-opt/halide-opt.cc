@@ -7,6 +7,8 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 #include "mlir/Transforms/Passes.h"
 
+#include "mlir/Conversion/Passes.hh"
+
 int main(int argc, char *argv[]) {
     mlir::DialectRegistry registry;
     registry.insert<mlir::arith::ArithDialect, mlir::halide::HalideDialect,
@@ -14,6 +16,7 @@ int main(int argc, char *argv[]) {
                     mlir::LLVM::LLVMDialect>();
     mlir::MlirOptMainConfig config;
     mlir::registerTransformsPasses();
+    mlir::halide::registerConversionPasses();
     mlir::halide::registerPasses();
     return mlir::failed(
         mlir::MlirOptMain(argc, argv, "Halide Optimization Tool", registry));

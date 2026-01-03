@@ -9,4 +9,5 @@ target_link_libraries(
         MLIRFuncDialect
         MLIRLLVMDialect
         MLIRSCFDialect
-        MLIRHalideTransforms)
+        MLIRHalideTransforms
+        MLIRHalideToArith)

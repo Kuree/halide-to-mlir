@@ -17,6 +17,7 @@ configure_lit_site_cfg(
 set (MLIR_TEST_DEPENDS
         FileCheck count not
         HalideToMLIRDriver
+        halide-opt
 )
 
 add_lit_testsuite(check-halide "Running the halide-to-mlir regression tests"
