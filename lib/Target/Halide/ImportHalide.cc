@@ -471,7 +471,10 @@ void setupFuncArgs(ArrayRef<LoweredArgument> args, func::FuncOp funcOp,
                         if (arg.kind == Halide::Argument::Kind::InputScalar) {
                             return convertType(builder, arg.type);
                         }
-                        return builder.getType<halide::HandleType>();
+                        // buffer type
+                        auto dim = arg.dimensions;
+                        auto elmTy = convertType(builder, arg.type);
+                        return builder.getType<halide::BufferType>(dim, elmTy);
                     });
     auto newType = builder.getFunctionType(types, {});
     funcOp.setFunctionType(newType);
@@ -492,8 +495,6 @@ void setupFuncArgs(ArrayRef<LoweredArgument> args, func::FuncOp funcOp,
         auto yield = builder.create<halide::YieldOp>(builder.getUnknownLoc());
         builder.setInsertionPoint(yield);
         funcOp.setArgAttr(idx, "halide.name", builder.getStringAttr(arg.name));
-        funcOp.setArgAttr(idx, "halide.dim",
-                          builder.getI32IntegerAttr(arg.dimensions));
     }
 }
 

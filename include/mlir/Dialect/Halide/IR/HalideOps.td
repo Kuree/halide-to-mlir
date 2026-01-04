@@ -109,6 +109,27 @@ def Halide_HandleType : TypeDef<Halide_Dialect, "Handle"> {
   let assemblyFormat = "";
 }
 
+def Halide_BufferType : TypeDef<Halide_Dialect, "Buffer"> {
+  let mnemonic = "buffer";
+  let summary = "Halide buffer type with dynamic shape";
+  let description = [{
+    Represents a Halide buffer type similar to memref but with always-dynamic shapes.
+    Like memref, it contains a rank and an element type, but all dimensions are dynamic.
+
+    Syntax: `!halide.buffer<rank, element_type>`
+
+    Examples:
+      - `!halide.buffer<2, f32>` - 2D buffer of f32 elements (both dimensions dynamic)
+      - `!halide.buffer<3, i32>` - 3D buffer of i32 elements (all dimensions dynamic)
+      - `!halide.buffer<1, f16>` - 1D buffer of f16 elements (dynamic size)
+  }];
+
+  let parameters = (ins "int64_t":$rank, "Type":$elementType);
+
+  let assemblyFormat = "`<` $rank `,` $elementType `>`";
+
+}
+
 //===----------------------------------------------------------------------===//
 // Base Classes
 //===----------------------------------------------------------------------===//

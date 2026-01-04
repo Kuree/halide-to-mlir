@@ -15,7 +15,7 @@ int main() {
     return 0;
 }
 
-// CHECK-LABEL: @func(%arg0: !halide.handle {halide.dim = 2 : i32, halide.name = "func"})
+// CHECK-LABEL: @func(%arg0: !halide.buffer<2, i32> {halide.name = "func"})
 // CHECK: halide.let "func.min.0"
 // CHECK: halide.let "func.min.1"
 // CHECK: halide.for "func.s0.y.rebased" = %c0
