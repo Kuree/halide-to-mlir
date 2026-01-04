@@ -122,20 +122,6 @@ func.func @test_dirty_flags(%arg0: !halide.buffer<2, f32>) {
   return
 }
 
-// Test _halide_buffer_set_bounds
-// CHECK-LABEL: @test_set_bounds
-func.func @test_set_bounds(%arg0: !halide.buffer<2, f32>) -> i32 {
-  %dim = arith.constant 0 : i32
-  %min = arith.constant 5 : i32
-  %extent = arith.constant 10 : i32
-
-  // CHECK: return %c0
-
-  %result = halide.call Intrinsic "_halide_buffer_set_bounds"(%arg0, %dim, %min, %extent) :
-    (!halide.buffer<2, f32>, i32, i32, i32) -> i32
-  return %result : i32
-}
-
 // Test _halide_buffer_get_host
 // CHECK-LABEL: @test_buffer_get_host
 func.func @test_buffer_get_host(%arg0: !halide.buffer<2, i32>) -> i64 {
@@ -145,4 +131,15 @@ func.func @test_buffer_get_host(%arg0: !halide.buffer<2, i32>) -> i64 {
   %1 = halide.cast %0 : !halide.handle to i64
   // CHECK: return %[[IDX]]
   return %1: i64
+}
+
+// Test noops
+// CHECK-LABEL @test_noop
+func.func @test_noop(%arg0: !halide.buffer<2, i32>) {
+// CHECK-COUNT-4: arith.constant 0
+  %0 = halide.call Extern "_halide_buffer_set_bounds"(%arg0) : (!halide.buffer<2, i32>) -> i32
+  %1 = halide.call Extern "_halide_buffer_init"(%arg0) : (!halide.buffer<2, i32>) -> i32
+  %2 = halide.call Extern "_halide_buffer_get_shape"(%arg0) : (!halide.buffer<2, i32>) -> i32
+  %3 = halide.call Extern "make_struct"(%arg0) : (!halide.buffer<2, i32>) -> i32
+  return
 }

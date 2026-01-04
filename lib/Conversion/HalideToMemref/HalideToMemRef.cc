@@ -8,6 +8,8 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/ADT/StringSet.h"
+
 #define GEN_PASS_DEF_CONVERTHALIDETOMEMREF
 #include "mlir/Conversion/Conversions.h.inc"
 
@@ -18,6 +20,10 @@ namespace {
 //===----------------------------------------------------------------------===//
 // Helper to identify and convert Halide buffer intrinsic calls
 //===----------------------------------------------------------------------===//
+
+bool isBufferHelper(StringRef name) {
+    return name.starts_with("_halide_buffer_") || name == "make_struct";
+}
 
 /// Base pattern for converting halide. call operations that call buffer helpers
 template <typename ConcretePattern>
@@ -35,11 +41,6 @@ struct BufferHelperCallConversion : OpConversionPattern<halide::CallOp> {
 
         return ConcretePattern::rewriteBufferHelper(callOp, adaptor, rewriter,
                                                     funcName);
-    }
-
-  protected:
-    static bool isBufferHelper(StringRef name) {
-        return name.starts_with("_halide_buffer_");
     }
 };
 
@@ -240,7 +241,7 @@ struct GetTypeConversion : BufferHelperCallConversion<GetTypeConversion> {
 //===----------------------------------------------------------------------===//
 // _halide_buffer_is_bounds_query
 // Returns: bool (true if host==nullptr && device==0)
-// Conversion: Check if memref is null (special handling needed)
+// Conversion: Check if memref is null
 //===----------------------------------------------------------------------===//
 
 struct IsBoundsQueryConversion
@@ -251,6 +252,8 @@ struct IsBoundsQueryConversion
     rewriteBufferHelper(halide::CallOp callOp, OpAdaptor adaptor,
                         ConversionPatternRewriter &rewriter,
                         StringRef funcName) {
+
+        llvm::errs() << "here\n";
         if (funcName != "_halide_buffer_is_bounds_query")
             return failure();
 
@@ -329,21 +332,28 @@ struct DirtyFlagConversion : BufferHelperCallConversion<DirtyFlagConversion> {
 //===----------------------------------------------------------------------===//
 // _halide_buffer_set_bounds
 // Sets min and extent for a dimension
-// Conversion: This modifies metadata; in memref this is compile-time info
+// _halide_buffer_init
+// make_struct
+// Noop since memref is created by user
 //===----------------------------------------------------------------------===//
 
-struct SetBoundsConversion : BufferHelperCallConversion<SetBoundsConversion> {
+struct NoopConversion : BufferHelperCallConversion<NoopConversion> {
     using BufferHelperCallConversion::BufferHelperCallConversion;
 
     static LogicalResult
     rewriteBufferHelper(halide::CallOp callOp, OpAdaptor,
                         ConversionPatternRewriter &rewriter,
                         StringRef funcName) {
-        if (funcName != "_halide_buffer_set_bounds")
+        if (funcName != "_halide_buffer_set_bounds" &&
+            funcName != "_halide_buffer_init" &&
+            funcName != "_halide_buffer_get_shape" && funcName != "make_struct")
             return failure();
-
+        llvm::errs() << funcName << "\n";
+        auto ty = callOp.getType();
+        if (isa<halide::HandleType>(ty))
+            ty = rewriter.getIndexType();
         rewriter.replaceOpWithNewOp<arith::ConstantOp>(
-            callOp, rewriter.getZeroAttr(callOp.getType()));
+            callOp, rewriter.getZeroAttr(ty));
 
         return success();
     }
@@ -453,6 +463,12 @@ struct CastOpConversion : OpConversionPattern<halide::CastOp> {
     LogicalResult
     matchAndRewrite(halide::CastOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
+        if (isa<MemRefType>(adaptor.getValue().getType()) &&
+            op.getType().isInteger()) {
+            rewriter.replaceOpWithNewOp<memref::ExtractAlignedPointerAsIndexOp>(
+                op, adaptor.getValue());
+            return success();
+        }
         rewriter.replaceOp(op, adaptor.getValue());
         return success();
     }
@@ -470,7 +486,7 @@ struct ConvertHalideToMemRefPass
         target.addLegalDialect<memref::MemRefDialect, arith::ArithDialect,
                                func::FuncDialect, scf::SCFDialect>();
 
-        // Mark Halide load/store/allocate as illegal
+        // Mark Halide load/store/call as illegal
         target.addIllegalOp<halide::LoadOp, halide::StoreOp>();
 
         target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
@@ -481,6 +497,11 @@ struct ConvertHalideToMemRefPass
 
         target.addDynamicallyLegalOp<halide::CastOp>([&](halide::CastOp op) {
             return op.getValue().getType().isIntOrFloat();
+        });
+
+        target.addDynamicallyLegalOp<halide::CallOp>([](halide::CallOp op) {
+            StringRef name = op.getName();
+            return !isBufferHelper(name);
         });
 
         // Populate conversion patterns
@@ -538,7 +559,7 @@ void populateHalideToMemRefConversionPatterns(TypeConverter &typeConverter,
     patterns.add<GetDimensionsConversion, GetHostConversion,
                  GetDimPropertyConversion, GetTypeConversion,
                  IsBoundsQueryConversion, BufferCropConversion,
-                 DirtyFlagConversion, SetBoundsConversion, LoadOpConversion,
+                 DirtyFlagConversion, NoopConversion, LoadOpConversion,
                  StoreOpConversion, CastOpConversion>(typeConverter,
                                                       patterns.getContext());
 }
