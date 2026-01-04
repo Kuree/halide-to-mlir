@@ -275,7 +275,11 @@ struct ConvertHalideToArithPass
         target.addIllegalOp<MinOp, MaxOp>();
         target.addIllegalOp<EQOp, NEOp, LTOp, LEOp, GTOp, GEOp>();
         target.addIllegalOp<AndOp, OrOp, NotOp>();
-        target.addIllegalOp<SelectOp, CastOp>();
+        target.addIllegalOp<SelectOp>();
+        // Cast op may also be used by handle -> integer
+        target.addDynamicallyLegalOp<CastOp>([](CastOp op) -> bool {
+            return isa<HandleType, BufferType>(op.getValue().getType());
+        });
 
         if (failed(applyPartialConversion(getOperation(), target,
                                           std::move(patterns))))

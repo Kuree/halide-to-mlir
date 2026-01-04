@@ -135,3 +135,14 @@ func.func @test_set_bounds(%arg0: !halide.buffer<2, f32>) -> i32 {
     (!halide.buffer<2, f32>, i32, i32, i32) -> i32
   return %result : i32
 }
+
+// Test _halide_buffer_get_host
+// CHECK-LABEL: @test_buffer_get_host
+func.func @test_buffer_get_host(%arg0: !halide.buffer<2, i32>) -> i64 {
+  // CHECK: %[[PTR:.*]] = memref.extract_aligned_pointer_as_index %arg0 : memref<?x?xi32> -> index
+  // CHECK: %[[IDX:.*]] = arith.index_cast %[[PTR]] : index to i64
+  %0 = halide.call Extern "_halide_buffer_get_host"(%arg0) : (!halide.buffer<2, i32>) -> !halide.handle
+  %1 = halide.cast %0 : !halide.handle to i64
+  // CHECK: return %[[IDX]]
+  return %1: i64
+}

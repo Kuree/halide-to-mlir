@@ -78,7 +78,7 @@ struct GetDimensionsConversion
 //===----------------------------------------------------------------------===//
 // _halide_buffer_get_host
 // Returns: uint8_t* (pointer to host data)
-// Conversion: memref.extract_aligned_pointer_as_index + inttoptr
+// Conversion: memref.extract_aligned_pointer_as_index + index_cast
 //===----------------------------------------------------------------------===//
 
 struct GetHostConversion : BufferHelperCallConversion<GetHostConversion> {
@@ -94,16 +94,11 @@ struct GetHostConversion : BufferHelperCallConversion<GetHostConversion> {
         if (adaptor.getArgs().size() != 1)
             return failure();
 
-        auto loc = callOp.getLoc();
         Value memref = adaptor.getArgs()[0];
 
-        // Extract the base pointer as an integer
-        Value ptrAsIndex =
-            rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(
-                loc, rewriter.getIndexType(), memref);
-
-        rewriter.replaceOpWithNewOp<arith::IndexCastOp>(
-            callOp, callOp.getType(), ptrAsIndex);
+        // Extract the base pointer as an index
+        rewriter.replaceOpWithNewOp<memref::ExtractAlignedPointerAsIndexOp>(
+            callOp, rewriter.getIndexType(), memref);
         return success();
     }
 };
@@ -452,6 +447,17 @@ struct StoreOpConversion : OpConversionPattern<halide::StoreOp> {
     }
 };
 
+struct CastOpConversion : OpConversionPattern<halide::CastOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(halide::CastOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOp(op, adaptor.getValue());
+        return success();
+    }
+};
+
 struct ConvertHalideToMemRefPass
     : ::impl::ConvertHalideToMemRefBase<ConvertHalideToMemRefPass> {
 
@@ -471,6 +477,10 @@ struct ConvertHalideToMemRefPass
             // Function is legal if it doesn't use halide.buffer types
             return typeConverter.isSignatureLegal(op.getFunctionType()) &&
                    typeConverter.isLegal(&op.getBody());
+        });
+
+        target.addDynamicallyLegalOp<halide::CastOp>([&](halide::CastOp op) {
+            return op.getValue().getType().isIntOrFloat();
         });
 
         // Populate conversion patterns
@@ -510,12 +520,27 @@ void populateHalideToMemRefConversionPatterns(TypeConverter &typeConverter,
         return MemRefType::get(shape, elementType);
     });
 
-    patterns
-        .add<GetDimensionsConversion, GetHostConversion,
-             GetDimPropertyConversion, GetTypeConversion,
-             IsBoundsQueryConversion, BufferCropConversion, DirtyFlagConversion,
-             SetBoundsConversion, LoadOpConversion, StoreOpConversion>(
-            typeConverter, patterns.getContext());
+    typeConverter.addConversion(
+        [](HandleType type) { return IndexType::get(type.getContext()); });
+
+    typeConverter.addSourceMaterialization(
+        [](OpBuilder &builder, Type ty, ValueRange values,
+           Location loc) -> std::optional<Value> {
+            if (values.size() != 1)
+                return {};
+            auto v = values.front();
+            if (isa<IntegerType>(ty) && isa<IndexType>(v.getType())) {
+                return builder.create<arith::IndexCastOp>(loc, ty, v);
+            }
+            return {};
+        });
+
+    patterns.add<GetDimensionsConversion, GetHostConversion,
+                 GetDimPropertyConversion, GetTypeConversion,
+                 IsBoundsQueryConversion, BufferCropConversion,
+                 DirtyFlagConversion, SetBoundsConversion, LoadOpConversion,
+                 StoreOpConversion, CastOpConversion>(typeConverter,
+                                                      patterns.getContext());
 }
 
 } // namespace mlir::halide

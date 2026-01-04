@@ -71,3 +71,10 @@ func.func @test_cast_float_to_int(%arg0: f32) -> i32 {
   // CHECK: return %[[CONV]] : i32
   return %0 : i32
 }
+
+// CHECK-LABEL: @test_handle_cast
+func.func @test_handle_cast(%arg0: !halide.handle) -> i64 {
+  // CHECK: halide.cast
+  %0 = halide.cast %arg0 : !halide.handle to i64
+  return %0: i64
+}

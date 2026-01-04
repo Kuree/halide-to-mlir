@@ -32,4 +32,3 @@ func.func @store(%arg0: !halide.buffer<2, i32> {halide.name = "buf"}) {
   halide.store "buf"[%c0: i32] = %c0 if %true : i32
   return
 }
-
