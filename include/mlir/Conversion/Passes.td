@@ -59,12 +59,26 @@ def ConvertHalideToMemRef : Pass<"convert-halide-to-memref"> {
 
     Supported conversions:
     - halide.handle type -> memref<...> type with dimension information
-    - halide. load with linear index -> memref. load with multi-dimensional indices
-    - halide.store with linear index -> memref.store with multi-dimensional indices
-    - halide.allocate -> memref.alloc/memref.alloca
+    - halide.load/halide.store -> memref.load/memref.store. Note that the shape will be collapsed.
   }];
   let dependentDialects = ["mlir::memref::MemRefDialect", "mlir::arith::ArithDialect",
                            "mlir::scf::SCFDialect"];
+}
+
+def ConvertHalideToFunc : Pass<"convert-halide-to-func"> {
+  let summary = "Convert Halide dialect to Func dialect";
+  let description = [{
+    This pass converts Halide dialect operations to Func dialect operations.
+
+    Specifically, it converts:
+    - `halide.assert` operations into conditional checks that call `puts` to
+      print an error message and `abort` to terminate the program when the
+      assertion fails.
+  }];
+  let dependentDialects = [
+    "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect", "mlir::scf:: SCFDialect",
+    "mlir::arith::ArithDialect"
+  ];
 }
 
 #endif // HALIDE_CONVERSION_PASSES

@@ -2,6 +2,7 @@
 #define HALIDE_TO_MLIR_CONVERSION_PASSES_HH
 
 #include "mlir/Conversion/HalideToArith/HalideToArith.hh"
+#include "mlir/Conversion/HalideToFunc/HalideToFunc.hh"
 #include "mlir/Conversion/HalideToMath/HalideToMath.hh"
 #include "mlir/Conversion/HalideToMemRef/HalideToMemRef.hh"
 #include "mlir/Conversion/HalideToSCF/HalideToSCF.hh"

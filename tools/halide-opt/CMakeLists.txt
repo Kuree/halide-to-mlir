@@ -12,6 +12,7 @@ target_link_libraries(
         MLIRSCFDialect
         MLIRHalideTransforms
         MLIRHalideToArith
+        MLIRHalideToFunc
         MLIRHalideToMath
         MLIRHalideToMemRef
         MLIRHalideToSCF)
