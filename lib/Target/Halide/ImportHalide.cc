@@ -226,34 +226,8 @@ class HalideToMLIRVisitor : public IRVisitor {
         op->false_value.accept(this);
         Value fVal = popValue();
 
-        // Stack order: cond, true, false -> pop: false, true, cond
-        // Wait, standard visit order: cond, true, false.
-        // Stack: [cond], [cond, true], [cond, true, false].
-        // Pop: false. Pop: true. Pop: cond.
-        // So reverse order of popping is required.
-        std::swap(tVal, fVal); // fVal is now actually true_value
-        std::swap(cond, fVal); // cond is now actually condition, tVal is false,
-                               // fVal is true (wait, logic hard)
-
-        // Correct order:
-        // 1. visit(cond) -> push(cond)
-        // 2. visit(true) -> push(true)
-        // 3. visit(false) -> push(false)
-        // Stack top: false.
-
-        // Let's redo logic cleanly:
-        // Value valFalse = popValue();
-        // Value valTrue = popValue();
-        // Value valCond = popValue();
-
-        // The implementation above with swaps was messy.
-        // Correct logic:
-        Value falseV = popValue();
-        Value trueV = popValue();
-        Value condV = popValue();
-
         Value res = builder.create<halide::SelectOp>(builder.getUnknownLoc(),
-                                                     condV, trueV, falseV);
+                                                     cond, tVal, fVal);
         pushValue(res);
     }
 
@@ -263,13 +237,23 @@ class HalideToMLIRVisitor : public IRVisitor {
         op->predicate.accept(this);
         Value pred = popValue();
 
-        // Since predicate is usually on top if visited second.
-        // Just be consistent with visit order.
-
         Value res = builder.create<halide::LoadOp>(
             builder.getUnknownLoc(), convertType(builder, op->type),
             builder.getStringAttr(op->name), idx, pred);
         pushValue(res);
+    }
+
+    void visit(const Store *op) override {
+        op->value.accept(this);
+        Value val = popValue();
+        op->index.accept(this);
+        Value idx = popValue();
+        op->predicate.accept(this);
+        Value pred = popValue();
+
+        builder.create<halide::StoreOp>(builder.getUnknownLoc(),
+                                        builder.getStringAttr(op->name), val,
+                                        idx, pred);
     }
 
     void visit(const Call *op) override {
@@ -398,19 +382,6 @@ class HalideToMLIRVisitor : public IRVisitor {
         }
     }
 
-    void visit(const Store *op) override {
-        op->value.accept(this);
-        Value val = popValue();
-        op->index.accept(this);
-        Value idx = popValue();
-        op->predicate.accept(this);
-        Value pred = popValue();
-
-        builder.create<halide::StoreOp>(builder.getUnknownLoc(),
-                                        builder.getStringAttr(op->name), val,
-                                        idx, pred);
-    }
-
     void visit(const Provide *op) override {
         llvm_unreachable("Not implemented");
     }
@@ -520,6 +491,9 @@ void setupFuncArgs(ArrayRef<LoweredArgument> args, func::FuncOp funcOp,
         builder.setInsertionPointToEnd(block);
         auto yield = builder.create<halide::YieldOp>(builder.getUnknownLoc());
         builder.setInsertionPoint(yield);
+        funcOp.setArgAttr(idx, "halide.name", builder.getStringAttr(arg.name));
+        funcOp.setArgAttr(idx, "halide.dim",
+                          builder.getI32IntegerAttr(arg.dimensions));
     }
 }
 
