@@ -36,7 +36,7 @@ def ConvertHalideToMath : Pass<"convert-halide-to-math"> {
     - Rounding: floor, ceil, round, trunc
     - Other: abs, erf, fma, copysign
   }];
-  let dependentDialects = ["mlir::math::MathDialect"];
+  let dependentDialects = ["mlir::math::MathDialect", "mlir::arith::ArithDialect"];
 }
 
 def ConvertHalideToSCF : Pass<"convert-halide-to-scf"> {

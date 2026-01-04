@@ -5,6 +5,8 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/ADT/StringSet.h"
+
 #define GEN_PASS_DEF_CONVERTHALIDETOARITH
 #include "mlir/Conversion/Conversions.h.inc"
 
@@ -260,6 +262,154 @@ struct CastOpConversion : OpConversionPattern<CastOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// CallOp to Arith Dialect Conversions
+//===----------------------------------------------------------------------===//
+
+// Helper to check if a CallOp is a pure intrinsic function
+bool isPureIntrinsicCall(CallOp op) {
+    return op.getCallType() == CallType::PureIntrinsic ||
+           op.getCallType() == CallType::Intrinsic;
+}
+
+struct UnaryCallOpToArithConversion : OpConversionPattern<CallOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CallOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        if (!isPureIntrinsicCall(op)) {
+            return failure();
+        }
+
+        StringRef name = op.getName();
+        auto loc = op.getLoc();
+        auto resultType = op.getType();
+        auto args = adaptor.getArgs();
+
+        if (args.size() != 1)
+            return failure();
+        Value arg = args[0];
+
+        if (name == "bitwise_not") {
+            // Create constant of all 1s
+            auto allOnes = rewriter.create<arith::ConstantOp>(
+                loc, resultType, rewriter.getIntegerAttr(resultType, -1));
+            rewriter.replaceOpWithNewOp<arith::XOrIOp>(op, arg, allOnes);
+            return success();
+        }
+        return failure();
+    }
+};
+
+struct BinaryCallOpToArithConversion : OpConversionPattern<CallOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CallOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        if (!isPureIntrinsicCall(op)) {
+            return failure();
+        }
+
+        StringRef name = op.getName();
+        auto loc = op.getLoc();
+        auto resultType = op.getType();
+        auto args = adaptor.getArgs();
+
+        if (args.size() != 2)
+            return failure();
+        Value lhs = args[0];
+        Value rhs = args[1];
+
+        if (name == "bitwise_and") {
+            rewriter.replaceOpWithNewOp<arith::AndIOp>(op, lhs, rhs);
+            return success();
+        }
+        if (name == "bitwise_or") {
+            rewriter.replaceOpWithNewOp<arith::OrIOp>(op, lhs, rhs);
+            return success();
+        }
+        if (name == "bitwise_xor") {
+            rewriter.replaceOpWithNewOp<arith::XOrIOp>(op, lhs, rhs);
+            return success();
+        }
+        if (name == "shift_left") {
+            rewriter.replaceOpWithNewOp<arith::ShLIOp>(op, lhs, rhs);
+            return success();
+        }
+        if (name == "shift_right") {
+            // TODO: support unsigned
+            rewriter.replaceOpWithNewOp<arith::ShRSIOp>(op, lhs, rhs);
+            return success();
+        }
+        if (name == "halving_add") {
+            // (a + b) >> 1
+            auto add = rewriter.create<arith::AddIOp>(loc, lhs, rhs);
+            auto one = rewriter.create<arith::ConstantOp>(
+                loc, resultType, rewriter.getIntegerAttr(resultType, 1));
+            // TODO: support unsigned
+            rewriter.replaceOpWithNewOp<arith::ShRSIOp>(op, add, one);
+            return success();
+        }
+        if (name == "halving_sub") {
+            // (a - b) >> 1
+            auto sub = rewriter.create<arith::SubIOp>(loc, lhs, rhs);
+            auto one = rewriter.create<arith::ConstantOp>(
+                loc, resultType, rewriter.getIntegerAttr(resultType, 1));
+            // TODO: support unsigned
+            rewriter.replaceOpWithNewOp<arith::ShRSIOp>(op, sub, one);
+            return success();
+        }
+        if (name == "rounding_halving_add") {
+            // (a + b + 1) >> 1
+            auto add = rewriter.create<arith::AddIOp>(loc, lhs, rhs);
+            auto one = rewriter.create<arith::ConstantOp>(
+                loc, resultType, rewriter.getIntegerAttr(resultType, 1));
+            auto addOne = rewriter.create<arith::AddIOp>(loc, add, one);
+            // TODO: support unsigned
+            rewriter.replaceOpWithNewOp<arith::ShRSIOp>(op, addOne, one);
+            return success();
+        }
+        if (name == "mod_round_to_zero") {
+            rewriter.replaceOpWithNewOp<arith::RemFOp>(op, resultType, lhs,
+                                                       rhs);
+            return success();
+        }
+        return failure();
+    }
+};
+
+struct TernaryCallOpTooArithConversion : OpConversionPattern<CallOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CallOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        if (!isPureIntrinsicCall(op)) {
+            return failure();
+        }
+
+        StringRef name = op.getName();
+        auto loc = op.getLoc();
+        auto args = adaptor.getArgs();
+
+        if (args.size() != 3)
+            return failure();
+        Value a = args[0];
+        Value b = args[1];
+        Value c = args[2];
+        if (name == "mul_shift_right") {
+            // (a * b) >> c
+            auto mul = rewriter.create<arith::MulIOp>(loc, a, b);
+            // TODO: support unsigned
+            rewriter.replaceOpWithNewOp<arith::ShRSIOp>(op, mul, c);
+            return success();
+        }
+        return failure();
+    }
+};
+
+//===----------------------------------------------------------------------===//
 // Pass Implementation
 //===----------------------------------------------------------------------===//
 
@@ -279,6 +429,22 @@ struct ConvertHalideToArithPass
         // Cast op may also be used by handle -> integer
         target.addDynamicallyLegalOp<CastOp>([](CastOp op) -> bool {
             return isa<HandleType, BufferType>(op.getValue().getType());
+        });
+
+        target.addDynamicallyLegalOp<CallOp>([](CallOp op) {
+            if (op.getCallType() != CallType::PureIntrinsic &&
+                op.getCallType() != CallType::Intrinsic) {
+                return true;
+            }
+
+            StringRef name = op.getName();
+            static const llvm::StringSet arithIntrinsics = {
+                "bitwise_and",     "bitwise_or",          "bitwise_xor",
+                "bitwise_not",     "shift_left",          "shift_right",
+                "mul_shift_right", "mod_round_to_zero",   "halving_add",
+                "halving_sub",     "rounding_halving_add"};
+
+            return !arithIntrinsics.contains(name);
         });
 
         if (failed(applyPartialConversion(getOperation(), target,
@@ -314,5 +480,9 @@ void populateHalideToArithConversionPatterns(RewritePatternSet &patterns) {
 
     // Select and Cast
     patterns.add<SelectOpConversion, CastOpConversion>(patterns.getContext());
+
+    // CallOp
+    patterns.add<UnaryCallOpToArithConversion, BinaryCallOpToArithConversion,
+                 TernaryCallOpTooArithConversion>(patterns.getContext());
 }
 } // namespace mlir::halide

@@ -7,6 +7,7 @@ target_link_libraries(
         MLIRHalideDialect
         MLIRArithDialect
         MLIRFuncDialect
+        MLIRMathDialect
         MLIRLLVMDialect
         MLIRSCFDialect
         MLIRHalideTransforms
