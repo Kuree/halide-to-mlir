@@ -3,6 +3,7 @@
 
 #include "mlir/Conversion/HalideToArith/HalideToArith.hh"
 #include "mlir/Conversion/HalideToMath/HalideToMath.hh"
+#include "mlir/Conversion/HalideToSCF/HalideToSCF.hh"
 
 namespace mlir::halide {
 /// Generate the code for registering conversion passes.

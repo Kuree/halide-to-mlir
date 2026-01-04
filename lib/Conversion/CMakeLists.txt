@@ -1,2 +1,3 @@
 add_subdirectory(HalideToArith)
 add_subdirectory(HalideToMath)
+add_subdirectory(HalideToSCF)

@@ -39,4 +39,16 @@ def ConvertHalideToMath : Pass<"convert-halide-to-math"> {
   let dependentDialects = ["mlir::math::MathDialect"];
 }
 
+def ConvertHalideToSCF : Pass<"convert-halide-to-scf"> {
+  let summary = "Convert Halide control flow operations to SCF dialect";
+  let description = [{
+    This pass converts Halide control flow operations to their corresponding
+    operations in MLIR's SCF (Structured Control Flow) dialect.
+
+    Note: halide.let operations are not converted by this pass and should
+    be handled separately by `let2reg`.
+  }];
+  let dependentDialects = ["mlir::scf::SCFDialect", "mlir::arith::ArithDialect"];
+}
+
 #endif // HALIDE_CONVERSION_PASSES

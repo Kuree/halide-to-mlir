@@ -36,39 +36,10 @@ struct ReplaceLet : OpRewritePattern<halide::LetStmtOp> {
     }
 };
 
-struct InsertArgToFor : OpRewritePattern<halide::ForOp> {
-    using OpRewritePattern::OpRewritePattern;
-    LogicalResult matchAndRewrite(halide::ForOp op,
-                                  PatternRewriter &rewriter) const override {
-        auto *block = &op.getBody().front();
-        if (block->getNumArguments() != 0)
-            return failure();
-        // insert an arg and replace all the variable with the arg
-        auto name = op.getName();
-        auto arg =
-            block->addArgument(op.getMin().getType(), rewriter.getUnknownLoc());
-        // cannot have let stmt or for stmt inside due to shadowing
-        if (!block->getOps<halide::LetStmtOp>().empty())
-            return failure();
-        if (llvm::any_of(block->getOps<halide::ForOp>(),
-                         [](halide::ForOp forOp) {
-                             return forOp.getBody().getNumArguments() == 0;
-                         }))
-            return failure();
-
-        op.walk([&](halide::VariableOp var) {
-            if (var.getName() == name) {
-                rewriter.replaceOp(var, arg);
-            }
-        });
-        return success();
-    }
-};
-
 struct Let2RegPass : ::impl::Let2RegBase<Let2RegPass> {
     void runOnOperation() override {
         RewritePatternSet patterns(&getContext());
-        patterns.add<ReplaceLet, InsertArgToFor>(&getContext());
+        patterns.add<ReplaceLet>(&getContext());
         GreedyRewriteConfig config;
         // bottom up to prevent lots of mismatches
         config.useTopDownTraversal = false;
