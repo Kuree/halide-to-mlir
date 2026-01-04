@@ -51,4 +51,19 @@ def ConvertHalideToSCF : Pass<"convert-halide-to-scf"> {
   let dependentDialects = ["mlir::scf::SCFDialect", "mlir::arith::ArithDialect"];
 }
 
+def ConvertHalideToMemRef : Pass<"convert-halide-to-memref"> {
+  let summary = "Convert Halide handle types and load/store operations to MemRef dialect";
+  let description = [{
+    This pass converts Halide handle types and memory operations to their
+    corresponding operations in MLIR's MemRef dialect.
+
+    Supported conversions:
+    - halide.handle type -> memref<...> type with dimension information
+    - halide. load with linear index -> memref. load with multi-dimensional indices
+    - halide.store with linear index -> memref.store with multi-dimensional indices
+    - halide.allocate -> memref.alloc/memref.alloca
+  }];
+  let dependentDialects = ["mlir::memref::MemRefDialect", "mlir::arith::ArithDialect"];
+}
+
 #endif // HALIDE_CONVERSION_PASSES

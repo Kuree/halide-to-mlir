@@ -12,4 +12,5 @@ target_link_libraries(
         MLIRHalideTransforms
         MLIRHalideToArith
         MLIRHalideToMath
+        MLIRHalideToMemRef
         MLIRHalideToSCF)
