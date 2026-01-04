@@ -1,4 +1,4 @@
-// RUN: halide-opt %s --convert-halide-to-memref | FileCheck %s
+// RUN: halide-opt %s --convert-halide-to-memref --allow-unregistered-dialect | FileCheck %s
 
 // CHECK-LABEL: @load
 func.func @load(%arg0: !halide.buffer<2, i32> {halide.name = "buf"}) -> i32 {
@@ -30,5 +30,16 @@ func.func @store(%arg0: !halide.buffer<2, i32> {halide.name = "buf"}) {
   // CHECK: memref.store %[[ZERO_INT]], %[[SHAPE]][%[[ZERO]]] : memref<?xi32>
   // CHECK-NOT: else
   halide.store "buf"[%c0: i32] = %c0 if %true : i32
+  return
+}
+
+// CHECK-LABEL: @producer
+func.func @producer() {
+// CHECK-NOT: halide.producer_consumer
+// CHECK: "op.op"()
+// CHECK-NEXT: return
+  halide.producer_consumer "func" is_producer true {
+    "op.op"() : () -> ()
+  }
   return
 }

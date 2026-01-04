@@ -471,6 +471,24 @@ struct CastOpConversion : OpConversionPattern<halide::CastOp> {
     }
 };
 
+struct ProducerConsumerConversion
+    : OpConversionPattern<halide::ProducerConsumerOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(halide::ProducerConsumerOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        // Noop
+        auto *term = op.getBody().front().getTerminator();
+        rewriter.inlineBlockBefore(&op.getBody().front(), op->getBlock(),
+                                   op->getIterator());
+
+        rewriter.eraseOp(term);
+        rewriter.eraseOp(op);
+        return success();
+    }
+};
+
 struct ConvertHalideToMemRefPass
     : ::impl::ConvertHalideToMemRefBase<ConvertHalideToMemRefPass> {
 
@@ -484,7 +502,8 @@ struct ConvertHalideToMemRefPass
                                func::FuncDialect, scf::SCFDialect>();
 
         // Mark Halide load/store/call as illegal
-        target.addIllegalOp<halide::LoadOp, halide::StoreOp>();
+        target.addIllegalOp<halide::LoadOp, halide::StoreOp,
+                            halide::ProducerConsumerOp>();
 
         target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
             // Function is legal if it doesn't use halide.buffer types
@@ -553,12 +572,12 @@ void populateHalideToMemRefConversionPatterns(TypeConverter &typeConverter,
             return {};
         });
 
-    patterns.add<GetDimensionsConversion, GetHostConversion,
-                 GetDimPropertyConversion, GetTypeConversion,
-                 IsBoundsQueryConversion, BufferCropConversion,
-                 DirtyFlagConversion, NoopConversion, LoadOpConversion,
-                 StoreOpConversion, CastOpConversion>(typeConverter,
-                                                      patterns.getContext());
+    patterns.add<
+        GetDimensionsConversion, GetHostConversion, GetDimPropertyConversion,
+        GetTypeConversion, IsBoundsQueryConversion, BufferCropConversion,
+        DirtyFlagConversion, NoopConversion, LoadOpConversion,
+        StoreOpConversion, CastOpConversion, ProducerConsumerConversion>(
+        typeConverter, patterns.getContext());
 }
 
 } // namespace mlir::halide
