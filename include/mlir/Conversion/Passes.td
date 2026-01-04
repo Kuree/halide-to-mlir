@@ -63,7 +63,8 @@ def ConvertHalideToMemRef : Pass<"convert-halide-to-memref"> {
     - halide.store with linear index -> memref.store with multi-dimensional indices
     - halide.allocate -> memref.alloc/memref.alloca
   }];
-  let dependentDialects = ["mlir::memref::MemRefDialect", "mlir::arith::ArithDialect"];
+  let dependentDialects = ["mlir::memref::MemRefDialect", "mlir::arith::ArithDialect",
+                           "mlir::scf::SCFDialect"];
 }
 
 #endif // HALIDE_CONVERSION_PASSES

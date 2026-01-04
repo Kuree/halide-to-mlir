@@ -4,6 +4,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Halide/IR/HalideOps.hh"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -353,6 +354,104 @@ struct SetBoundsConversion : BufferHelperCallConversion<SetBoundsConversion> {
     }
 };
 
+//===----------------------------------------------------------------------===//
+// Operation Conversions
+//===----------------------------------------------------------------------===//
+
+Value lookUpMemrefValue(StringRef varName, Operation *op) {
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    for (auto i = 0; i < funcOp.getNumArguments(); i++) {
+        if (auto name = funcOp.getArgAttrOfType<StringAttr>(i, "halide.name")) {
+            if (name == varName) {
+                return funcOp.getArgument(i);
+            }
+        }
+    }
+    return {};
+}
+
+memref::CollapseShapeOp collapseShape(MemRefType ty, Value memrefValue,
+                                      OpBuilder &builder) {
+    ReassociationIndices indices(ty.getRank());
+    for (auto i = 0; i < ty.getRank(); i++)
+        indices[i] = i;
+    SmallVector<ReassociationIndices> reassociation = {indices};
+    return builder.create<memref::CollapseShapeOp>(builder.getUnknownLoc(),
+                                                   memrefValue, reassociation);
+}
+
+struct LoadOpConversion : OpConversionPattern<halide::LoadOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(halide::LoadOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto memrefValue = lookUpMemrefValue(op.getName(), op);
+        if (!memrefValue)
+            return failure();
+        auto idxValue = op.getIndex();
+        auto memrefTy = dyn_cast<MemRefType>(memrefValue.getType());
+        if (!memrefTy)
+            return failure();
+
+        auto ifOp = rewriter.create<scf::IfOp>(
+            op.getLoc(), op->getResultTypes(), adaptor.getPredicate(),
+            /*addThenBlock=*/true, /*addElseBlock=*/true);
+
+        rewriter.setInsertionPointToEnd(ifOp.thenBlock());
+
+        memrefValue = collapseShape(memrefTy, memrefValue, rewriter);
+        idxValue = rewriter.createOrFold<arith::IndexCastOp>(
+            rewriter.getUnknownLoc(), rewriter.getIndexType(), idxValue);
+        auto loadOp = rewriter.create<memref::LoadOp>(op.getLoc(), op.getType(),
+                                                      memrefValue, idxValue);
+        rewriter.create<scf::YieldOp>(op.getLoc(), loadOp->getResults());
+
+        rewriter.setInsertionPointToEnd(ifOp.elseBlock());
+        // Zero out
+        auto zero = rewriter.create<arith::ConstantOp>(
+            op.getLoc(), op.getType(), rewriter.getZeroAttr(op.getType()));
+        rewriter.create<scf::YieldOp>(op.getLoc(), zero->getResults());
+
+        rewriter.replaceOp(op, ifOp);
+        return success();
+    }
+};
+
+struct StoreOpConversion : OpConversionPattern<halide::StoreOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(halide::StoreOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto memrefValue = lookUpMemrefValue(op.getName(), op);
+        if (!memrefValue)
+            return failure();
+
+        auto idxValue = op.getIndex();
+        auto memrefTy = dyn_cast<MemRefType>(memrefValue.getType());
+        if (!memrefTy)
+            return failure();
+
+        auto ifOp = rewriter.create<scf::IfOp>(
+            op.getLoc(), op->getResultTypes(), adaptor.getPredicate(),
+            /*addThenBlock=*/true, /*addElseBlock=*/false);
+
+        rewriter.setInsertionPointToEnd(ifOp.thenBlock());
+
+        memrefValue = collapseShape(memrefTy, memrefValue, rewriter);
+        idxValue = rewriter.createOrFold<arith::IndexCastOp>(
+            rewriter.getUnknownLoc(), rewriter.getIndexType(), idxValue);
+        rewriter.create<memref::StoreOp>(op.getLoc(), adaptor.getValue(),
+                                         memrefValue, idxValue);
+        rewriter.create<scf::YieldOp>(op.getLoc());
+
+        rewriter.replaceOp(op, ifOp);
+
+        return success();
+    }
+};
+
 struct ConvertHalideToMemRefPass
     : ::impl::ConvertHalideToMemRefBase<ConvertHalideToMemRefPass> {
 
@@ -363,7 +462,7 @@ struct ConvertHalideToMemRefPass
 
         // Mark MemRef and Arith dialects as legal
         target.addLegalDialect<memref::MemRefDialect, arith::ArithDialect,
-                               func::FuncDialect>();
+                               func::FuncDialect, scf::SCFDialect>();
 
         // Mark Halide load/store/allocate as illegal
         target.addIllegalOp<halide::LoadOp, halide::StoreOp>();
@@ -411,11 +510,12 @@ void populateHalideToMemRefConversionPatterns(TypeConverter &typeConverter,
         return MemRefType::get(shape, elementType);
     });
 
-    patterns.add<GetDimensionsConversion, GetHostConversion,
-                 GetDimPropertyConversion, GetTypeConversion,
-                 IsBoundsQueryConversion, BufferCropConversion,
-                 DirtyFlagConversion, SetBoundsConversion>(
-        typeConverter, patterns.getContext());
+    patterns
+        .add<GetDimensionsConversion, GetHostConversion,
+             GetDimPropertyConversion, GetTypeConversion,
+             IsBoundsQueryConversion, BufferCropConversion, DirtyFlagConversion,
+             SetBoundsConversion, LoadOpConversion, StoreOpConversion>(
+            typeConverter, patterns.getContext());
 }
 
 } // namespace mlir::halide
