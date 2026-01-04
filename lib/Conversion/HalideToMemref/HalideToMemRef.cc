@@ -252,8 +252,6 @@ struct IsBoundsQueryConversion
     rewriteBufferHelper(halide::CallOp callOp, OpAdaptor adaptor,
                         ConversionPatternRewriter &rewriter,
                         StringRef funcName) {
-
-        llvm::errs() << "here\n";
         if (funcName != "_halide_buffer_is_bounds_query")
             return failure();
 
@@ -348,7 +346,6 @@ struct NoopConversion : BufferHelperCallConversion<NoopConversion> {
             funcName != "_halide_buffer_init" &&
             funcName != "_halide_buffer_get_shape" && funcName != "make_struct")
             return failure();
-        llvm::errs() << funcName << "\n";
         auto ty = callOp.getType();
         if (isa<halide::HandleType>(ty))
             ty = rewriter.getIndexType();
